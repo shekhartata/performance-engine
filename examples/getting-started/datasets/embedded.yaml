@@ -1,0 +1,44 @@
+# Embedded data-model dataset: the related entity is nested inside each document.
+# The logical collection name is "main"; the engine maps it to a managed
+# physical collection (perfenv_<project>_<model>_main) at run time.
+dataset:
+  mode: synthetic
+  seed: 42
+  collections:
+    main:
+      count: 1000
+      document_size:
+        target_bytes: 768
+      fields:
+        group_id:
+          type: integer
+          cardinality: 200
+          distribution: zipf
+          alpha: 1.3
+        created_at:
+          type: datetime
+          distribution: uniform
+          start: 365d
+        status:
+          type: categorical
+          values:
+            ACTIVE: 0.60
+            INACTIVE: 0.10
+            PENDING: 0.15
+            ARCHIVED: 0.15
+        amount:
+          type: float
+          min: 1
+          max: 10000
+        group:
+          type: object
+          fields:
+            group_id:
+              type: integer
+              cardinality: 200
+            region:
+              type: categorical
+              values:
+                NA: 0.5
+                APAC: 0.3
+                EU: 0.2

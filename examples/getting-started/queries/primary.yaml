@@ -1,0 +1,32 @@
+# The primary query shape under test. `collection` is omitted: the engine
+# resolves it to the dataset's primary collection ("main" here), or to the
+# --collection / target override when pointing at existing data.
+query:
+  id: primary_lookup
+  operation: find
+  filter:
+    group_id:
+      value: "{{group_id}}"
+    created_at:
+      $gte: "{{start_date}}"
+  projection:
+    _id: 1
+    amount: 1
+    status: 1
+    created_at: 1
+  sort:
+    created_at: -1
+  limit: 100
+
+parameters:
+  group_id:
+    type: dataset_value
+    field: group_id
+    strategy: selectivity_targeted
+  start_date:
+    type: datetime_range
+    strategy: range
+    range:
+      - 7d
+      - 30d
+      - 90d

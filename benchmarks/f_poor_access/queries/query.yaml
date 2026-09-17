@@ -1,0 +1,11 @@
+query:
+  id: unselective_scan
+  operation: find
+  filter:
+    status:
+      value: "{{status}}"
+parameters:
+  status:
+    type: literal
+    strategy: fixed
+    value: OPEN

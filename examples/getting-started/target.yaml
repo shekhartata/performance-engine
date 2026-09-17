@@ -1,0 +1,45 @@
+# Single-file target spec: database, collection and query in one place.
+#   perfenv plan --spec examples/getting-started/target.yaml
+#   perfenv run  --spec examples/getting-started/target.yaml --ack-non-production
+version: 1
+name: getting-started-target
+target:
+  uri_env: MONGODB_URI
+  database: my_database
+  collection: my_collection
+query:
+  id: primary_lookup
+  operation: find
+  filter:
+    group_id:
+      value: "{{group_id}}"
+    created_at:
+      $gte: "{{start_date}}"
+  projection:
+    _id: 1
+    amount: 1
+    status: 1
+    created_at: 1
+  sort:
+    created_at: -1
+  limit: 100
+  parameters:
+    group_id:
+      type: dataset_value
+      field: group_id
+      strategy: selectivity_targeted
+    start_date:
+      type: datetime_range
+      strategy: range
+      range: [7d, 30d, 90d]
+sweep:
+  selectivity: [0.01, 0.05]
+  concurrency: [1, 4]
+  cache_state: [hot, cold]
+slo:
+  p95_ms: 100
+workload:
+  duration_seconds: 8
+  concurrency: 4
+data:
+  mode: existing

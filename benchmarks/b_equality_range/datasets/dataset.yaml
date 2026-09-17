@@ -1,0 +1,16 @@
+dataset:
+  mode: synthetic
+  seed: 2
+  count: 600
+  fields:
+    group_id:
+      type: integer
+      cardinality: 80
+      distribution: zipf
+    created_at:
+      type: datetime
+      start: 365d
+    amount:
+      type: float
+      min: 1
+      max: 500

@@ -1,0 +1,23 @@
+experiment:
+  id: existing
+  # Point the suite at data that already exists in the cluster.
+  # Both can also be supplied on the CLI:
+  #   perfenv run -p examples/getting-started -e existing \
+  #     --database my_database --collection my_collection --ack-non-production
+  # ...or once for the whole project via the `target:` block in project.yaml.
+  database: my_database
+  collection: my_collection
+  model: referenced
+  query: primary
+  workload: read
+  slo: default
+  environment: atlas-test
+  dimensions:
+    # documents is ignored here: the collection size is whatever is already on disk.
+    selectivity:
+      values: [0.01, 0.05]
+    concurrency:
+      values: [1, 4]
+    cache_state:
+      values: [hot, cold]
+  repetitions: 2

@@ -1,0 +1,12 @@
+query:
+  id: multikey_contains
+  operation: find
+  filter:
+    tags:
+      value: "{{tag}}"
+  limit: 50
+parameters:
+  tag:
+    type: dataset_value
+    field: tags
+    strategy: random_existing

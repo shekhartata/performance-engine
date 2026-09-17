@@ -1,0 +1,12 @@
+dataset:
+  mode: synthetic
+  seed: 1
+  count: 400
+  fields:
+    key:
+      type: integer
+      cardinality: 400
+      distribution: sequential
+    label:
+      type: string
+      cardinality: 400

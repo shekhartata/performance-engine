@@ -1,0 +1,13 @@
+dataset:
+  mode: synthetic
+  seed: 6
+  count: 500
+  fields:
+    status:
+      type: categorical
+      values:
+        OPEN: 0.95
+        CLOSED: 0.05
+    note:
+      type: string
+      cardinality: 500

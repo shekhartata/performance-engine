@@ -1,0 +1,4 @@
+indexes:
+  - name: key_idx
+    keys:
+      key: 1

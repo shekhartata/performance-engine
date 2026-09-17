@@ -1,0 +1,14 @@
+query:
+  id: recent_by_group
+  operation: find
+  filter:
+    group_id:
+      value: "{{group_id}}"
+  sort:
+    created_at: -1
+  limit: 100
+parameters:
+  group_id:
+    type: dataset_value
+    field: group_id
+    strategy: random_existing

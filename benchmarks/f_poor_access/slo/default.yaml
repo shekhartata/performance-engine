@@ -1,0 +1,6 @@
+slo:
+  latency:
+    p95_ms: 100
+    p99_ms: 250
+  error_rate:
+    maximum: 0.01

@@ -1,0 +1,7 @@
+environment:
+  engine: mongodb
+  connection:
+    uri_env: MONGODB_URI
+    database: perf_test
+  safety:
+    non_production: true

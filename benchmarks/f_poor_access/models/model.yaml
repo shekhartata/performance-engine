@@ -1,0 +1,4 @@
+model:
+  fields:
+    status: string
+    note: string

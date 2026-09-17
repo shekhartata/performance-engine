@@ -1,0 +1,53 @@
+# External-generator spec. Each documents value materializes one collection
+# named {collection}_{documents} (e.g. my_collection_10000) by shelling out
+# to your data-generator repo, then the engine measures a curve at that scale.
+#
+#   perfenv run --spec examples/getting-started/external.yaml \
+#     --ack-non-production --allow-external-writes --analyze --report
+version: 1
+name: getting-started-external
+target:
+  uri_env: MONGODB_URI
+  database: perf_test
+  collection: my_collection
+query:
+  id: primary_lookup
+  operation: find
+  filter:
+    group_id:
+      value: "{{group_id}}"
+    created_at:
+      $gte: "{{start_date}}"
+  sort:
+    created_at: -1
+  limit: 100
+  parameters:
+    group_id:
+      type: dataset_value
+      field: group_id
+      strategy: selectivity_targeted
+    start_date:
+      type: datetime_range
+      strategy: range
+      range: [7d, 90d]
+sweep:
+  documents: [10000, 50000, 100000, 500000]
+  selectivity: [0.01, 0.05]
+  concurrency: [1, 8, 32]
+  cache_state: [hot, cold]
+  project_documents: [1000000]
+slo:
+  p95_ms: 100
+workload:
+  duration_seconds: 30
+  concurrency: 8
+data:
+  mode: external
+  collection_template: "{collection}_{documents}"
+  generator:
+    command: "python generate.py --count {documents} --uri {uri} --db {database} --collection {collection} --seed {seed}"
+    working_dir: ../my-data-generator
+    timeout_seconds: 1800
+    reuse_if_present: true
+    count_tolerance: 0.05
+    drop_after_run: false

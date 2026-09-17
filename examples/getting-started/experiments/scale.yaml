@@ -1,0 +1,29 @@
+experiment:
+  id: scaling
+  models:
+    - embedded
+    - referenced
+  dataset: referenced
+  datasets:
+    embedded: embedded
+    referenced: referenced
+  query: primary
+  indexes:
+    embedded: embedded
+    referenced: referenced
+  workload: read
+  slo: default
+  environment: atlas-test
+  dimensions:
+    documents:
+      values: [500, 1500, 3000]
+    selectivity:
+      values: [0.01, 0.05]
+    concurrency:
+      values: [1, 4]
+    cache_state:
+      values: [hot, cold]
+  repetitions: 2
+  fixed:
+    mongodb_version: auto
+    query_shape: primary_lookup

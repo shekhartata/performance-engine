@@ -1,0 +1,4 @@
+indexes:
+  - name: tags_idx
+    keys:
+      tags: 1

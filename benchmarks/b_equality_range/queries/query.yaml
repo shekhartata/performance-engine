@@ -1,0 +1,20 @@
+query:
+  id: equality_range
+  operation: find
+  filter:
+    group_id:
+      value: "{{group_id}}"
+    created_at:
+      $gte: "{{start_date}}"
+  sort:
+    created_at: -1
+  limit: 50
+parameters:
+  group_id:
+    type: dataset_value
+    field: group_id
+    strategy: selectivity_targeted
+  start_date:
+    type: datetime_range
+    strategy: range
+    range: [7d, 30d, 90d]

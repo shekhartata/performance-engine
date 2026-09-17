@@ -1,0 +1,18 @@
+experiment:
+  id: a_indexed_equality
+  model: model
+  dataset: dataset
+  query: query
+  indexes: indexes
+  workload: read
+  slo: default
+  dimensions:
+    documents:
+      values: [200, 800]
+    selectivity:
+      values: [0.01, 0.1]
+    concurrency:
+      values: [1, 4]
+    cache_state:
+      values: [hot, cold]
+  repetitions: 2

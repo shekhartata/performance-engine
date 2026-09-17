@@ -1,0 +1,15 @@
+dataset:
+  mode: synthetic
+  seed: 4
+  count: 400
+  fields:
+    key:
+      type: string
+      cardinality: 400
+    tags:
+      type: array
+      array_size: [2, 8]
+      items:
+        type: string
+        cardinality: 30
+        distribution: zipf

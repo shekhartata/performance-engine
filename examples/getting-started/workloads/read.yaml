@@ -1,0 +1,10 @@
+workload:
+  mode: closed_loop
+  duration_seconds: 8
+  concurrency: 4
+  think_time_ms: 0
+  timeout_ms: 30000
+  warmup_queries: 10
+  explain_samples: 3
+  connection_pool:
+    max_size: 50

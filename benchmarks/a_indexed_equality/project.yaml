@@ -1,0 +1,14 @@
+name: a_indexed_equality
+environment: atlas-test
+default_slo: default
+safety:
+  non_production: true
+  managed_prefix: perfenv
+  max_storage_gb: 2
+execution:
+  warmup_queries: 5
+  explain_samples: 2
+  repetitions: 2
+  max_refinement_rounds: 1
+  insert_batch_size: 200
+  runs_dir: runs

@@ -1,0 +1,14 @@
+query:
+  id: filter_sort
+  operation: find
+  filter:
+    tenant_id:
+      value: "{{tenant_id}}"
+  sort:
+    timestamp: -1
+  limit: 100
+parameters:
+  tenant_id:
+    type: dataset_value
+    field: tenant_id
+    strategy: hot_value

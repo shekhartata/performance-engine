@@ -1,0 +1,12 @@
+dataset:
+  mode: synthetic
+  seed: 5
+  count: 400
+  fields:
+    group_id:
+      type: integer
+      cardinality: 50
+      distribution: zipf
+    created_at:
+      type: datetime
+      start: 90d

@@ -1,0 +1,13 @@
+dataset:
+  mode: synthetic
+  seed: 3
+  count: 600
+  fields:
+    tenant_id:
+      type: integer
+      cardinality: 20
+      distribution: zipf
+      alpha: 1.4
+    timestamp:
+      type: datetime
+      start: 90d

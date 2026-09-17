@@ -1,0 +1,12 @@
+query:
+  id: point_lookup
+  operation: find
+  filter:
+    key:
+      value: "{{key}}"
+  limit: 1
+parameters:
+  key:
+    type: dataset_value
+    field: key
+    strategy: random_existing

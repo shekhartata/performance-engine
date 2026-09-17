@@ -1,0 +1,11 @@
+environment:
+  engine: mongodb
+  connection:
+    uri_env: MONGODB_URI
+    database: perf_test
+  cluster:
+    deployment_type: replica_set
+    mongodb_version: auto
+    node_count: auto
+  safety:
+    non_production: true

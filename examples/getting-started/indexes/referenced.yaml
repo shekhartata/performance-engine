@@ -1,0 +1,13 @@
+indexes:
+  main:
+    - name: group_recent
+      keys:
+        group_id: 1
+        created_at: -1
+    - name: status_idx
+      keys:
+        status: 1
+  related:
+    - name: group_id_idx
+      keys:
+        group_id: 1

@@ -1,0 +1,47 @@
+# Referenced data-model dataset: the related entity lives in its own
+# collection and is joined by group_id.
+dataset:
+  mode: synthetic
+  seed: 42
+  collections:
+    related:
+      count: 200
+      fields:
+        group_id:
+          type: integer
+          cardinality: 200
+          distribution: sequential
+        region:
+          type: categorical
+          values:
+            NA: 0.5
+            APAC: 0.3
+            EU: 0.2
+    main:
+      count: 1000
+      primary: true
+      document_size:
+        target_bytes: 512
+      fields:
+        group_id:
+          type: integer
+          cardinality: 200
+          distribution: zipf
+          alpha: 1.3
+          references: related.group_id
+        created_at:
+          type: datetime
+          distribution: uniform
+          start: 365d
+        status:
+          type: categorical
+          values:
+            ACTIVE: 0.60
+            INACTIVE: 0.10
+            PENDING: 0.15
+            ARCHIVED: 0.15
+        amount:
+          type: float
+          min: 1
+          max: 10000
+          distribution: uniform

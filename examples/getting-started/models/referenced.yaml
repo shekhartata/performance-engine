@@ -1,0 +1,18 @@
+# "Referenced" names a MongoDB modeling pattern, not a domain:
+# the related entity lives in its own collection.
+model:
+  name: referenced
+  collections:
+    related:
+      fields:
+        _id: objectId
+        group_id: integer
+        region: string
+    main:
+      fields:
+        _id: objectId
+        group_id: integer
+        created_at: datetime
+        status: string
+        amount: float
+        payload: object

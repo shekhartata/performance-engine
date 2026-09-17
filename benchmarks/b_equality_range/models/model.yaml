@@ -1,0 +1,5 @@
+model:
+  fields:
+    group_id: integer
+    created_at: datetime
+    amount: float

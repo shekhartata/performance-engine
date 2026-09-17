@@ -1,0 +1,4 @@
+model:
+  fields:
+    tenant_id: integer
+    timestamp: datetime

@@ -1,0 +1,7 @@
+workload:
+  mode: closed_loop
+  duration_seconds: 5
+  concurrency: 2
+  timeout_ms: 20000
+  warmup_queries: 5
+  explain_samples: 2

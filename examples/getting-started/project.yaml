@@ -1,0 +1,21 @@
+name: getting-started
+environment: atlas-test
+default_slo: default
+# Optional single place to point every experiment at a live target:
+# target:
+#   uri_env: MONGODB_URI
+#   database: my_database
+#   collection: my_collection
+safety:
+  non_production: true
+  managed_prefix: perfenv
+  max_storage_gb: 5
+execution:
+  warmup_queries: 10
+  explain_samples: 3
+  repetitions: 2
+  boundary_uncertainty: 0.15
+  change_point_multiplier: 2.0
+  max_refinement_rounds: 2
+  insert_batch_size: 500
+  runs_dir: runs

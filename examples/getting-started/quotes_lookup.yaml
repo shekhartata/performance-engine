@@ -1,0 +1,54 @@
+# Quote ruid -> loan $lookup against Radian MI sample data.
+# Driving collection is quotes; each request matches one quote _id (the quote ruid)
+# then $lookups the related loan on quotes.loan_ruid = loans._id.
+#
+# 10K already lives in mi_transformation. 50K / 100K are generated into
+# mi_quotes_50000 and mi_quotes_100000 (see run_quotes_scale.py).
+version: 1
+name: quotes-loan-lookup
+target:
+  uri_env: MONGODB_URI
+  database: mi_transformation
+  collection: quotes
+query:
+  id: quote_ruid_loan_lookup
+  operation: aggregate
+  pipeline:
+    - $match:
+        _id: "{{quote_ruid}}"
+    - $lookup:
+        from: loans
+        localField: loan_ruid
+        foreignField: _id
+        as: loan
+    - $unwind:
+        path: "$loan"
+        preserveNullAndEmptyArrays: true
+  parameters:
+    quote_ruid:
+      type: dataset_value
+      field: _id
+      strategy: random_existing
+sweep:
+  selectivity: [0.01]
+  concurrency: [1, 8]
+  cache_state: [hot, cold]
+slo:
+  p95_ms: 100
+  p99_ms: 250
+workload:
+  duration_seconds: 12
+  concurrency: 8
+  timeout_ms: 30000
+  warmup_queries: 8
+  explain_samples: 3
+execution:
+  repetitions: 2
+  max_refinement_rounds: 0
+  warmup_queries: 8
+  explain_samples: 3
+  runs_dir: runs
+safety:
+  non_production: true
+data:
+  mode: existing

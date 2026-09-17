@@ -1,0 +1,75 @@
+# {{ report.executive_summary.run_id }}
+
+## Executive Summary
+
+- Confidence: **{{ report.confidence }}**
+- Models: {{ report.data_model | join(', ') }}
+- MAPE: {{ report.executive_summary.validation.mape if report.executive_summary.validation else 'n/a' }}
+
+## Environment
+
+```json
+{{ report.environment | tojson }}
+```
+
+## SLO
+
+```json
+{{ report.slo | tojson }}
+```
+
+## Observed Boundary
+
+{% for model, boundary in report.observed_boundary.items() %}
+### {{ model }}
+
+- Kind: {{ boundary.kind if boundary else 'n/a' }}
+- Safe region documents: {{ boundary.safe_region_documents if boundary else 'n/a' }}
+- First fail: {{ boundary.first_fail if boundary else 'n/a' }}
+{% endfor %}
+
+## Sensitivity Analysis
+
+{% for name, value in (report.sensitivity_analysis or {}).items() %}
+- {{ name }}: {{ value }}%
+{% endfor %}
+
+## Diagnostics
+
+{% for item in report.diagnostics or [] %}
+- **{{ item.observation }}** — {{ item.evidence }} ({{ item.hypothesis }}, {{ item.confidence }})
+{% endfor %}
+
+## Model Comparison
+
+```json
+{{ report.model_comparison | tojson }}
+```
+
+## Change Points
+
+```json
+{{ report.change_points | tojson }}
+```
+
+## Scale curves
+
+Measured p95 by dataset size. Projected sizes are tagged `extrapolated: true`.
+
+```json
+{{ report.scale_curves | tojson }}
+```
+
+```json
+{{ report.projection | tojson }}
+```
+
+## Limitations
+
+{% for item in report.limitations %}
+- {{ item }}
+{% endfor %}
+
+## Raw Results
+
+{{ report.raw_results_path }}
