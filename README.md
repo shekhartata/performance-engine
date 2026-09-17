@@ -193,3 +193,7 @@ On macOS, XGBoost needs `libomp` (`brew install libomp`). If the native library 
 ## Layout
 
 See `src/perf_envelope/` for the package map from the V1 PRD. Example project: `examples/getting-started/`. Built-in shapes: `benchmarks/`.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
