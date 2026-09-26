@@ -11,6 +11,11 @@ from perf_envelope.config.models import ParameterSpec, QueryBundle, QueryConfig
 from perf_envelope.exceptions import ConfigError
 
 PLACEHOLDER = re.compile(r"^\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$")
+# Cell-time placeholders may be a bare name or a list slice/index: collections[1:union_count].
+CELL_PLACEHOLDER = re.compile(r"^\{\{\s*([^{}]+)\s*\}\}$")
+_SLICE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[([^:\]]*):([^:\]]*)\]$")
+_INDEX = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[([^:\]]+)\]$")
+_MISSING = object()
 
 
 def substitute(value: Any, params: dict[str, Any]) -> Any:
@@ -32,6 +37,124 @@ def build_filter(query: QueryConfig, params: dict[str, Any]) -> dict[str, Any]:
 
 def build_pipeline(query: QueryConfig, params: dict[str, Any]) -> list[dict[str, Any]]:
     return substitute(query.pipeline or [], params)
+
+
+def render_for_cell(value: Any, variables: dict[str, Any]) -> Any:
+    """Fill per-test-case structure: typed values, list slices, and `$for` expansion.
+
+    Placeholders whose names are not in `variables` are left untouched so a later
+    `substitute` can fill per-request parameters.
+    """
+    return _render(value, variables)
+
+
+def _render(value: Any, variables: dict[str, Any]) -> Any:
+    if isinstance(value, list):
+        rendered: list[Any] = []
+        for item in value:
+            expanded = _expand_for(item, variables)
+            if expanded is None:
+                rendered.append(_render(item, variables))
+            else:
+                rendered.extend(expanded)
+        return rendered
+    if isinstance(value, dict):
+        if "$for" in value:
+            raise ConfigError("`$for` must be an element of a list so it can expand into stages")
+        return {key: _render(item, variables) for key, item in value.items()}
+    if isinstance(value, str):
+        return _render_string(value, variables)
+    return value
+
+
+def _render_string(value: str, variables: dict[str, Any]) -> Any:
+    match = CELL_PLACEHOLDER.match(value)
+    if not match:
+        return value
+    resolved = _resolve_expr(match.group(1).strip(), variables)
+    if resolved is _MISSING:
+        return value
+    return resolved
+
+
+def _expand_for(item: Any, variables: dict[str, Any]) -> list[Any] | None:
+    if not isinstance(item, dict) or "$for" not in item:
+        return None
+    spec = item["$for"]
+    if not isinstance(spec, dict) or "each" not in spec:
+        raise ConfigError("`$for` requires an object with `each`")
+    emit = item.get("emit")
+    if emit is None:
+        raise ConfigError("`$for` requires `emit`")
+    sequence = _resolve_each(spec["each"], variables)
+    alias = str(spec.get("as") or "item")
+    parallel = bool(spec.get("parallel"))
+    rendered: list[Any] = []
+    for element in sequence:
+        scope = dict(variables)
+        scope[alias] = element
+        piece = _render(emit, scope)
+        if parallel:
+            piece = _stamp_parallel(piece)
+        if isinstance(piece, list):
+            rendered.extend(piece)
+        else:
+            rendered.append(piece)
+    return rendered
+
+
+def _stamp_parallel(piece: Any) -> Any:
+    if isinstance(piece, dict):
+        stamped = dict(piece)
+        stamped["parallel"] = True
+        return stamped
+    if isinstance(piece, list):
+        return [_stamp_parallel(item) for item in piece]
+    return piece
+
+
+def _resolve_each(each: Any, variables: dict[str, Any]) -> list[Any]:
+    if isinstance(each, list):
+        return list(each)
+    if not isinstance(each, str):
+        raise ConfigError("`$for.each` must be a list or a slice expression")
+    resolved = _resolve_expr(each.strip(), variables)
+    if resolved is _MISSING or not isinstance(resolved, list):
+        raise ConfigError(f"Cannot resolve `$for.each` expression '{each}'")
+    return resolved
+
+
+def _resolve_expr(expr: str, variables: dict[str, Any]) -> Any:
+    sliced = _SLICE.match(expr)
+    if sliced:
+        name, start_text, end_text = sliced.groups()
+        sequence = variables.get(name, _MISSING)
+        if not isinstance(sequence, list):
+            return _MISSING
+        start = _bound(start_text, variables, default=0)
+        end = _bound(end_text, variables, default=len(sequence))
+        return list(sequence[start:end])
+    indexed = _INDEX.match(expr)
+    if indexed:
+        name, index_text = indexed.groups()
+        sequence = variables.get(name, _MISSING)
+        if not isinstance(sequence, list):
+            return _MISSING
+        return sequence[_bound(index_text, variables, default=0)]
+    if expr in variables:
+        return variables[expr]
+    return _MISSING
+
+
+def _bound(text: str, variables: dict[str, Any], default: int) -> int:
+    token = text.strip()
+    if not token:
+        return default
+    if token.lstrip("-").isdigit():
+        return int(token)
+    if token not in variables:
+        raise ConfigError(f"Unknown slice bound '{token}'")
+    return int(variables[token])
 
 
 def sort_list(query: QueryConfig) -> list[tuple[str, int]] | None:

@@ -19,6 +19,7 @@ import {
   getRun,
   loadCollections,
   loadSession,
+  loadSpecExample,
   reportUrl,
   startRun,
 } from "./api";
@@ -45,6 +46,10 @@ const DEFAULT_ADVANCED = {
   synthetic_fields: "",
   second_query: "",
   second_model: "alt",
+  union_plan: "off" as "off" | "server" | "app" | "both",
+  union_count: "1, 2, 4, 8",
+  matches_per_key: "1, 50",
+  union_recipe: false,
 };
 
 const DEFAULT_SYNTHETIC_FIELDS = `{
@@ -108,6 +113,10 @@ function buildAdvanced(form: AdvancedForm): AdvancedPayload {
     allow_external_writes: form.allow_external_writes,
     synthetic_seed: Number(form.synthetic_seed),
     second_model: form.second_model.trim() || "alt",
+    union_plan: form.union_plan,
+    union_count: form.union_plan === "off" ? undefined : form.union_count.trim() || undefined,
+    matches_per_key: form.union_plan === "off" ? undefined : form.matches_per_key.trim() || undefined,
+    union_recipe: form.union_plan !== "off" && form.union_recipe,
   };
   if (form.synthetic_fields.trim()) {
     payload.synthetic_fields = parseJson(form.synthetic_fields, "Synthetic fields") as Record<string, unknown>;
@@ -129,6 +138,10 @@ export default function App() {
   const [ack, setAck] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [advanced, setAdvanced] = useState<AdvancedForm>(DEFAULT_ADVANCED);
+  const [inputMode, setInputMode] = useState<"guided" | "spec">("guided");
+  const [specYaml, setSpecYaml] = useState("");
+  const [specAllowExternal, setSpecAllowExternal] = useState(false);
+  const [loadingExample, setLoadingExample] = useState(false);
   const [run, setRun] = useState<RunStatus | null>(null);
   const [error, setError] = useState("");
   const [booting, setBooting] = useState(true);
@@ -194,10 +207,33 @@ export default function App() {
     setRun(null);
   }
 
+  async function onInsertExample() {
+    setError("");
+    setLoadingExample(true);
+    try {
+      const example = await loadSpecExample();
+      setSpecYaml(example.yaml);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load the example spec");
+    } finally {
+      setLoadingExample(false);
+    }
+  }
+
   async function onRun(event: FormEvent) {
     event.preventDefault();
     setError("");
     try {
+      if (inputMode === "spec") {
+        if (!specYaml.trim()) throw new Error("Spec YAML is empty");
+        const next = await startRun({
+          ack_non_production: ack,
+          spec_yaml: specYaml,
+          allow_external_writes: specAllowExternal,
+        });
+        setRun(next);
+        return;
+      }
       const parsed = parseJson(query, "Query");
       const payload = buildAdvanced(advanced);
       const next = await startRun({
@@ -213,7 +249,11 @@ export default function App() {
     }
   }
 
-  const ready = connected && database && collection && query.trim() && ack && !running;
+  const ready =
+    connected &&
+    ack &&
+    !running &&
+    (inputMode === "spec" ? Boolean(specYaml.trim()) : Boolean(database && collection && query.trim()));
 
   return (
     <div className="page">
@@ -221,8 +261,8 @@ export default function App() {
         <p className="eyebrow">Performance Envelope Engine</p>
         <h1>How far does this query hold?</h1>
         <p className="lede">
-          Paste an Atlas URI, pick a collection, drop in the query, and run. The engine measures p95
-          against your SLO and draws the operating envelope.
+          Paste an Atlas URI, then either pick a collection and a query, or paste a full spec. The
+          engine measures p95 against your SLO and draws the operating envelope.
         </p>
       </header>
 
@@ -257,55 +297,120 @@ export default function App() {
           </form>
         )}
 
-        <form className={`stack ${connected ? "is-open" : "is-closed"}`} onSubmit={onRun}>
-          <div className="split">
-            <label>
-              Database
-              <select
-                value={database}
-                onChange={(event) => setDatabase(event.target.value)}
-                disabled={!connected}
-              >
-                <option value="">Select…</option>
-                {(session?.databases || []).map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Collection
-              <select
-                value={collection}
-                onChange={(event) => setCollection(event.target.value)}
-                disabled={!connected || !database}
-              >
-                <option value="">Select…</option>
-                {collections.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
+        <form
+          className={`stack ${connected ? "is-open" : "is-closed"}${inputMode === "spec" ? " is-spec" : ""}`}
+          onSubmit={onRun}
+        >
+          <div className="mode-switch" role="tablist" aria-label="How to describe the test">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={inputMode === "guided"}
+              className={inputMode === "guided" ? "on" : "ghost"}
+              onClick={() => setInputMode("guided")}
+            >
+              Guided
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={inputMode === "spec"}
+              className={inputMode === "spec" ? "on" : "ghost"}
+              onClick={() => setInputMode("spec")}
+            >
+              Spec YAML
+            </button>
           </div>
 
-          <label>
-            Query
-            <textarea
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              disabled={!connected}
-              spellCheck={false}
-              placeholder={`{\n  "filter": {\n    "status": "{{status}}",\n    "created_at": { "$gte": "{{start_date}}" }\n  },\n  "sort": { "created_at": -1 },\n  "limit": 50\n}`}
-            />
-          </label>
-          <p className="hint">
-            Prefer a parameterized find with <code>limit</code> (not a frozen id) so selectivity and
-            result size can move. Placeholders like <code>{"{{status}}"}</code> and{" "}
-            <code>{"{{start_date}}"}</code> are filled per cell.
-          </p>
+          {inputMode === "spec" ? (
+            <>
+              <label>
+                Spec
+                <textarea
+                  className="spec"
+                  value={specYaml}
+                  onChange={(event) => setSpecYaml(event.target.value)}
+                  disabled={!connected}
+                  spellCheck={false}
+                  placeholder={"name: my-envelope\ntarget:\n  database: mi_transformation\n  collection: quotes\nquery:\n  filter:\n    status: \"{{status}}\"\n  limit: 50"}
+                />
+              </label>
+              <p className="hint">
+                Same document the CLI takes. The connection URI comes from the session above; a{" "}
+                <code>uri</code> inside this spec is ignored. Database, collection, sweep, plans, and
+                recipe all come from the YAML.
+              </p>
+              <div className="actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={onInsertExample}
+                  disabled={!connected || loadingExample}
+                >
+                  {loadingExample ? "Loading…" : "Insert union example"}
+                </button>
+              </div>
+              <label className="ack">
+                <input
+                  type="checkbox"
+                  checked={specAllowExternal}
+                  onChange={(event) => setSpecAllowExternal(event.target.checked)}
+                />
+                Allow an external generator in this spec to write data.
+              </label>
+            </>
+          ) : (
+            <>
+              <div className="split">
+                <label>
+                  Database
+                  <select
+                    value={database}
+                    onChange={(event) => setDatabase(event.target.value)}
+                    disabled={!connected}
+                  >
+                    <option value="">Select…</option>
+                    {(session?.databases || []).map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Collection
+                  <select
+                    value={collection}
+                    onChange={(event) => setCollection(event.target.value)}
+                    disabled={!connected || !database}
+                  >
+                    <option value="">Select…</option>
+                    {collections.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <label>
+                Query
+                <textarea
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  disabled={!connected}
+                  spellCheck={false}
+                  placeholder={`{\n  "filter": {\n    "status": "{{status}}",\n    "created_at": { "$gte": "{{start_date}}" }\n  },\n  "sort": { "created_at": -1 },\n  "limit": 50\n}`}
+                />
+              </label>
+              <p className="hint">
+                Prefer a parameterized find with <code>limit</code> (not a frozen id) so selectivity and
+                result size can move. Placeholders like <code>{"{{status}}"}</code> and{" "}
+                <code>{"{{start_date}}"}</code> are filled per cell.
+              </p>
+            </>
+          )}
 
           <label className="ack">
             <input type="checkbox" checked={ack} onChange={(event) => setAck(event.target.checked)} />
@@ -316,22 +421,26 @@ export default function App() {
             <button type="submit" className="run" disabled={!ready}>
               {running ? "Running…" : "Run test"}
             </button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => setAdvancedOpen((open) => !open)}
-            >
-              {advancedOpen ? "Hide advanced" : "Advanced"}
-            </button>
+            {inputMode === "guided" ? (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setAdvancedOpen((open) => !open)}
+              >
+                {advancedOpen ? "Hide advanced" : "Advanced"}
+              </button>
+            ) : null}
           </div>
 
-          <div className={`advanced ${advancedOpen ? "is-open" : ""}`}>
-            <AdvancedFields form={advanced} onChange={setAdvanced} />
-          </div>
+          {inputMode === "guided" ? (
+            <div className={`advanced ${advancedOpen ? "is-open" : ""}`}>
+              <AdvancedFields form={advanced} onChange={setAdvanced} />
+            </div>
+          ) : null}
         </form>
       </section>
 
-      {run ? <RunPanel run={run} slo={advanced.slo_p95} /> : null}
+      {run ? <RunPanel run={run} slo={run.slo_p95 ?? advanced.slo_p95} /> : null}
     </div>
   );
 }
@@ -456,6 +565,42 @@ function AdvancedFields({
               onChange={(event) => patch("allow_external_writes", event.target.checked)}
             />
             Allow writes outside the perfenv_ prefix
+          </label>
+        </>
+      ) : null}
+      <label>
+        Union plan
+        <select
+          value={form.union_plan}
+          onChange={(event) => patch("union_plan", event.target.value as AdvancedForm["union_plan"])}
+        >
+          <option value="off">Off</option>
+          <option value="server">Server $unionWith</option>
+          <option value="app">Application fan-out</option>
+          <option value="both">Both</option>
+        </select>
+      </label>
+      {form.union_plan !== "off" ? (
+        <>
+          <label>
+            Union N
+            <input value={form.union_count} onChange={(event) => patch("union_count", event.target.value)} placeholder="1, 2, 4, 8" />
+          </label>
+          <label>
+            Matches per key
+            <input
+              value={form.matches_per_key}
+              onChange={(event) => patch("matches_per_key", event.target.value)}
+              placeholder="1, 50"
+            />
+          </label>
+          <label className="ack wide">
+            <input
+              type="checkbox"
+              checked={form.union_recipe}
+              onChange={(event) => patch("union_recipe", event.target.checked)}
+            />
+            Build indexed loan_instance copies (perfenv_union_*) from the scale map
           </label>
         </>
       ) : null}

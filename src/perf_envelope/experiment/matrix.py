@@ -17,12 +17,24 @@ class ExperimentCell:
     concurrency: int
     cache_state: str
     extras: dict[str, Any] = field(default_factory=dict)
+    # Setting name → where its value is applied. Not part of the cell identity.
+    bindings: dict[str, str] = field(default_factory=dict)
 
     def key(self) -> tuple:
         extra_items = tuple(sorted((k, str(v)) for k, v in self.extras.items()))
         return (self.documents, self.selectivity, self.concurrency, self.cache_state, extra_items)
 
     def as_dict(self) -> dict[str, Any]:
+        return {
+            "documents": self.documents,
+            "selectivity": self.selectivity,
+            "concurrency": self.concurrency,
+            "cache_state": self.cache_state,
+            **self.extras,
+        }
+
+    def variables(self) -> dict[str, Any]:
+        """Values available while rendering a per-test-case template."""
         return {
             "documents": self.documents,
             "selectivity": self.selectivity,
@@ -48,6 +60,7 @@ def build_matrix(
     extras = {k: v for k, v in values.items() if k not in PRIMARY_DIMS}
     extra_keys = list(extras.keys())
     extra_values = [extras[k] for k in extra_keys] or [[None]]
+    bindings = dimensions.bindings()
 
     cells: list[ExperimentCell] = []
     for n, sel, conc, cache, extra_combo in product(
@@ -63,6 +76,7 @@ def build_matrix(
                 concurrency=int(conc),
                 cache_state=normalize_cache_state(str(cache)),
                 extras=extra_map,
+                bindings=dict(bindings),
             )
         )
     return cells

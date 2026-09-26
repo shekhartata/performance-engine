@@ -212,6 +212,25 @@ textarea:focus {
   transform: none;
 }
 
+.stack.is-open.is-spec {
+  max-height: none;
+}
+
+.mode-switch {
+  display: flex;
+  gap: 0.45rem;
+}
+
+.mode-switch button.on {
+  background: var(--ink);
+  color: #fffaf4;
+  border: 0;
+}
+
+textarea.spec {
+  min-height: 22rem;
+}
+
 .ack {
   flex-direction: row !important;
   align-items: flex-start;

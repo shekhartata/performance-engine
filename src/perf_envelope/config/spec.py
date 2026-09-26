@@ -24,6 +24,7 @@ from perf_envelope.config.models import (
     SLOConfig,
     SafetyConfig,
     TargetConfig,
+    ThresholdGoal,
     WorkloadConfig,
     primary_collection,
 )
@@ -132,6 +133,8 @@ def compile_spec_data(
     workload = _parse_workload(data.get("workload"))
     safety = SafetyConfig.model_validate(data.get("safety") or {})
     execution = ExecutionSettings.model_validate(data.get("execution") or {})
+    goal = _parse_goal(data.get("goal"))
+    plans_raw = _parse_plans(data.get("plans"))
 
     experiment = ExperimentConfig(
         id=str(data.get("id") or data.get("name") or source.stem),
@@ -144,7 +147,21 @@ def compile_spec_data(
         database=target.database,
         collection=experiment_collection,
         project_documents=project_documents,
+        goal=goal,
     )
+    models_map = {model_name: model}
+    queries = {model_name: query}
+    datasets = {model_name: dataset}
+    parameters_by_model = {model_name: parameters}
+    indexes_map = {model_name: indexes}
+    if plans_raw:
+        names = list(plans_raw)
+        experiment = experiment.model_copy(update={"models": names, "model": names[0]})
+        models_map = {name: model.model_copy(update={"name": name}) for name in names}
+        queries = {name: query.model_copy(update={"id": name}) for name in names}
+        datasets = {name: dataset for name in names}
+        parameters_by_model = {name: parameters for name in names}
+        indexes_map = {name: indexes for name in names}
 
     environment = EnvironmentConfig(
         connection=ConnectionConfig(
@@ -168,30 +185,78 @@ def compile_spec_data(
         environment=environment,
         experiment=experiment,
         dataset=dataset,
-        datasets={model_name: dataset},
+        datasets=datasets,
         query=query,
-        queries={model_name: query},
+        queries=queries,
         parameters=parameters,
-        parameters_by_model={model_name: parameters},
+        parameters_by_model=parameters_by_model,
         workload=workload,
         slo=slo,
-        models={model_name: model},
-        indexes={model_name: indexes},
+        models=models_map,
+        indexes=indexes_map,
         execution=execution,
-        extra={"spec": str(source), "target": target.model_dump()},
+        plans=plans_raw,
+        extra={"spec": str(source), "target": _redact_target(target), "user_spec": _user_spec(data)},
     )
 
 
 def _dimensions_from_sweep(raw: dict[str, Any]) -> ExperimentDimensions:
+    known = set(ExperimentDimensions.model_fields) - {"extra_axes"}
     dims: dict[str, Any] = {}
+    extra: dict[str, Any] = {}
     for key, value in raw.items():
         if isinstance(value, list):
-            dims[key] = {"values": value}
+            spec: Any = {"values": value}
         elif isinstance(value, dict) and "values" in value:
-            dims[key] = value
+            spec = value
         else:
-            raise ConfigError(f"sweep.{key} must be a list of values")
+            raise ConfigError(f"sweep.{key} must be a list of values or {{values, bind}}")
+        if key in known:
+            dims[key] = spec
+        else:
+            extra[key] = spec
+    if extra:
+        dims["extra_axes"] = extra
     return ExperimentDimensions.model_validate(dims)
+
+
+def _parse_goal(raw: Any) -> ThresholdGoal | None:
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("goal must be a mapping")
+    found = raw.get("find_threshold", raw)
+    if not isinstance(found, dict) or "axis" not in found:
+        raise ConfigError("goal.find_threshold requires an axis")
+    return ThresholdGoal.model_validate(found)
+
+
+def _parse_plans(raw: Any) -> dict[str, dict[str, Any]]:
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError("plans must be a mapping of name → plan")
+    plans: dict[str, dict[str, Any]] = {}
+    for name, plan in raw.items():
+        if not isinstance(plan, dict) or "steps" not in plan:
+            raise ConfigError(f"plans.{name} must be an object with steps")
+        plans[str(name)] = plan
+    return plans
+
+
+def _user_spec(data: dict[str, Any]) -> dict[str, Any]:
+    spec = dict(data)
+    target = spec.get("target")
+    if isinstance(target, dict) and "uri" in target:
+        spec["target"] = {key: value for key, value in target.items() if key != "uri"}
+    return spec
+
+
+def _redact_target(target: TargetConfig) -> dict[str, Any]:
+    dumped = target.model_dump()
+    if dumped.get("uri"):
+        dumped["uri"] = "***"
+    return dumped
 
 
 def _parse_slo(raw: Any) -> SLOConfig:

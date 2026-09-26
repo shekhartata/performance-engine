@@ -53,6 +53,7 @@ export type RunStatus = {
   error: string | null;
   analysis: Analysis | null;
   observations: Record<string, unknown>[] | null;
+  slo_p95?: number | null;
 };
 
 export type AdvancedPayload = {
@@ -73,6 +74,10 @@ export type AdvancedPayload = {
   synthetic_fields?: Record<string, unknown>;
   second_query?: unknown;
   second_model?: string;
+  union_count?: string;
+  union_plan?: "off" | "server" | "app" | "both";
+  matches_per_key?: string;
+  union_recipe?: boolean;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -113,12 +118,18 @@ export function loadCollections(database: string) {
   return request<{ collections: string[] }>(`/api/databases/${encodeURIComponent(database)}/collections`);
 }
 
+export function loadSpecExample() {
+  return request<{ name: string; yaml: string }>("/api/spec-example");
+}
+
 export function startRun(body: {
-  database: string;
-  collection: string;
-  query: unknown;
+  database?: string;
+  collection?: string;
+  query?: unknown;
   ack_non_production: boolean;
   advanced?: AdvancedPayload;
+  spec_yaml?: string;
+  allow_external_writes?: boolean;
 }) {
   return request<RunStatus>("/api/runs", { method: "POST", body: JSON.stringify(body) });
 }

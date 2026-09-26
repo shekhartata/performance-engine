@@ -12,7 +12,7 @@ from perf_envelope.query.parser import build_filter, build_pipeline, sort_list
 
 
 class QueryResult:
-    __slots__ = ("ok", "latency_ms", "returned", "error", "timeout")
+    __slots__ = ("ok", "latency_ms", "returned", "error", "timeout", "step_ms")
 
     def __init__(self, ok: bool, latency_ms: float, returned: int = 0, error: str | None = None, timeout: bool = False):
         self.ok = ok
@@ -20,6 +20,7 @@ class QueryResult:
         self.returned = returned
         self.error = error
         self.timeout = timeout
+        self.step_ms: list[float] = []
 
 
 def execute_once(

@@ -6,6 +6,44 @@
 - Models: {{ report.data_model | join(', ') }}
 - MAPE: {{ report.executive_summary.validation.mape if report.executive_summary.validation else 'n/a' }}
 
+## Run settings
+
+Values the engine set for this run. `source` is `user` (from the spec), `default` (engine default), or `derived` (computed, with the formula when there is one).
+
+{% for row in report.run_settings.run or [] %}
+- **{{ row.setting }}** = `{{ row.value | tojson }}` ({{ row.source }}{% if row.formula %}; {{ row.formula }}{% endif %})
+{% endfor %}
+
+### Connection pool
+
+{% for line in report.pool_lines or [] %}
+- {{ line }}
+{% endfor %}
+
+{% if report.run_settings.cells %}
+### Per test case
+
+| Model | Rep | Database | Pool | Peak in use | Pool wait p95 ms | Parallel steps | Warmup | Client CPU % |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+{% for cell in report.run_settings.cells %}
+| {{ cell.model }} | {{ cell.repetition }} | {{ cell.database }} | {{ cell.pool.formula }} | {{ cell.pool.peak_in_use }} | {{ cell.pool.wait_p95_ms }} | {{ cell.parallel_steps }} | {{ cell.warmup }} | {{ cell.client_cpu_pct }} |
+{% endfor %}
+{% endif %}
+
+The full per-test-case record, including the rendered pipeline and sampled parameter values, is in `configuration/run_settings.json`.
+
+## Query
+
+```json
+{{ report.access_pattern | tojson }}
+```
+
+## Thresholds
+
+```json
+{{ report.thresholds | tojson }}
+```
+
 ## Environment
 
 ```json

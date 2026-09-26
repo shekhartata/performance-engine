@@ -14,11 +14,19 @@ FRIENDLY = {
 }
 
 
+def friendly_name(name: str) -> str:
+    if name in FRIENDLY:
+        return FRIENDLY[name]
+    raw = name[4:] if name.startswith("log_") else name
+    raw = raw.replace("__", " = ")
+    return raw.replace("_", " ").strip().title()
+
+
 def relative_sensitivity(fit: BoostedFit | None) -> dict[str, float]:
     if fit is None or not fit.importances:
         return {}
     total = sum(max(v, 0.0) for v in fit.importances.values()) or 1.0
     return {
-        FRIENDLY.get(name, name): round(100.0 * max(value, 0.0) / total, 1)
+        friendly_name(name): round(100.0 * max(value, 0.0) / total, 1)
         for name, value in sorted(fit.importances.items(), key=lambda kv: -kv[1])
     }

@@ -31,6 +31,7 @@ class RunRecord:
     analysis: dict[str, Any] | None = None
     observations: list[dict[str, Any]] | None = None
     run_dir: str | None = None
+    slo_p95: float | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 

@@ -17,15 +17,17 @@ class BaselineFit:
     pipeline: Pipeline
     feature_names: list[str]
     coefficients: dict[str, float]
+    extras: list[str]
 
     def predict_p95(self, frame) -> np.ndarray:
-        x, _, _ = feature_matrix(frame)
+        x, _, _ = feature_matrix(frame, self.extras)
         log_pred = self.pipeline.predict(x)
         return np.expm1(np.clip(log_pred, 0, None))
 
 
-def fit_baseline(frame, degree: int = 2) -> BaselineFit:
-    x, y, names = feature_matrix(frame)
+def fit_baseline(frame, degree: int = 2, extras: list[str] | None = None) -> BaselineFit:
+    extra_names = list(extras or [])
+    x, y, names = feature_matrix(frame, extra_names)
     pipeline = Pipeline(
         [
             ("scaler", StandardScaler()),
@@ -39,4 +41,9 @@ def fit_baseline(frame, degree: int = 2) -> BaselineFit:
     expanded = poly.get_feature_names_out(names)
     coefficients = {name: float(coef) for name, coef in zip(expanded, model.coef_)}
     coefficients["intercept"] = float(model.intercept_)
-    return BaselineFit(pipeline=pipeline, feature_names=list(expanded), coefficients=coefficients)
+    return BaselineFit(
+        pipeline=pipeline,
+        feature_names=list(expanded),
+        coefficients=coefficients,
+        extras=extra_names,
+    )

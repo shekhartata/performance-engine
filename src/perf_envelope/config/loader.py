@@ -100,6 +100,7 @@ class ResolvedExperiment:
     models: dict[str, ModelConfig]
     indexes: dict[str, IndexConfig]
     execution: ExecutionSettings
+    plans: dict[str, dict[str, Any]] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property

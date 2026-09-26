@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -15,9 +16,11 @@ from perf_envelope.config.models import DEFAULT_COLLECTION, DatasetConfig, prima
 from perf_envelope.dataset.external import materialize, render_collection_name
 from perf_envelope.dataset.generator import generate_into_mongo
 from perf_envelope.dataset.guardrails import assert_within_limit, estimate_storage
+from perf_envelope.dataset.recipe import materialize_recipe
 from perf_envelope.dataset.scaler import scale_dataset
 from perf_envelope.environment.discovery import discover
 from perf_envelope.environment.mongodb import MongoSession, connect, resolve_uri
+from perf_envelope.environment.pool import SizedClientCache, measure_rtt_ms, required_pool_size
 from perf_envelope.environment.safety import (
     CreationManifest,
     assert_non_production,
@@ -27,6 +30,7 @@ from perf_envelope.exceptions import ExecutionError, SafetyError
 from perf_envelope.experiment.matrix import ExperimentCell
 from perf_envelope.experiment.planner import ExperimentPlanner
 from perf_envelope.experiment.refinement import propose_refinement
+from perf_envelope.experiment.settings_log import cell_settings, host_info, run_level_settings
 from perf_envelope.models.indexes import ensure_indexes
 from perf_envelope.query.canonicalizer import canonical_form, shape_id
 from perf_envelope.query.parameters import QueryParameterGenerator
@@ -35,6 +39,7 @@ from perf_envelope.telemetry.explain import explain_query, summarize_explains
 from perf_envelope.telemetry.resources import capture_resources
 from perf_envelope.workload.cache import HOT, normalize_cache_state
 from perf_envelope.workload.concurrency import WorkloadExecutor, WorkloadMetrics
+from perf_envelope.workload.plan import parallel_width, render_plan, step_query
 
 console = Console()
 
@@ -59,6 +64,10 @@ class ExperimentRunner:
         self.repo = repo or ExperimentRepository(resolved.execution.runs_dir)
         self.planner = ExperimentPlanner(resolved)
         self.on_progress = on_progress
+        self._cell_logs: list[dict[str, Any]] = []
+        self._clients: SizedClientCache | None = None
+        self._recipe_state = None
+        self._rtt_ms: float | None = None
 
     def run(self, run_id: str | None = None) -> str:
         safety = self.resolved.environment.safety
@@ -74,7 +83,10 @@ class ExperimentRunner:
             self.resolved.environment,
             max_pool_size=self.resolved.workload.connection_pool.max_size,
         )
+        self._clients = SizedClientCache(resolve_uri(self.resolved.environment))
+        self._cell_logs = []
         try:
+            self._rtt_ms = measure_rtt_ms(session.client)
             env_meta = discover(session)
             self.repo.write_json(run_dir, "environment.json", env_meta)
             self.repo.write_json(
@@ -89,6 +101,10 @@ class ExperimentRunner:
                     "query": self.resolved.query.model_dump(),
                     "canonical": canonical_form(self.resolved.query),
                     "shape_id": shape_id(self.resolved.query),
+                    "parameters": {
+                        name: spec.model_dump() for name, spec in self.resolved.parameters.items()
+                    },
+                    "plans": self.resolved.plans,
                 },
             )
             self.repo.write_json(run_dir, "configuration/slo.json", self.resolved.slo.model_dump())
@@ -116,7 +132,25 @@ class ExperimentRunner:
                     }
                 ),
             )
+            if self._recipe_state is not None:
+                self.resolved.extra["recipe_state"] = self._recipe_state.as_dict()
+            self.repo.write_json(
+                run_dir,
+                "configuration/run_settings.json",
+                {
+                    "run": run_level_settings(
+                        self.resolved, rtt_ms=self._rtt_ms, host=host_info()
+                    ),
+                    "cells": self._cell_logs,
+                    "rtt_ms": self._rtt_ms,
+                    "host": host_info(),
+                    "recipe": self.resolved.extra.get("recipe_state"),
+                },
+            )
         finally:
+            if self._clients is not None:
+                self._clients.close()
+                self._clients = None
             session.close()
         console.print(f"[green]Run complete:[/green] {run_dir}")
         return run_dir.name
@@ -147,10 +181,14 @@ class ExperimentRunner:
         dataset = self.resolved.datasets.get(model_name, self.resolved.dataset)
         existing = dataset.mode == "existing"
         physical = self._physical_names(model_name)
+        self._ensure_recipe(session, manifest, coarse_cells)
+        goal = self.resolved.experiment.goal
+        axis = goal.axis if goal is not None else "documents"
 
         if existing:
             pending = self._existing_cells(session, model_name, coarse_cells, physical)
-            rounds = 1
+            # Document count is fixed by the collection. Other axes can still be refined.
+            rounds = 1 if axis == "documents" else self.resolved.execution.max_refinement_rounds + 1
         else:
             pending = list(coarse_cells)
             rounds = self.resolved.execution.max_refinement_rounds + 1
@@ -197,11 +235,7 @@ class ExperimentRunner:
                     p95s = [
                         row["p95_ms"]
                         for row in observations
-                        if row["model_id"] == model_name
-                        and row["dataset_size"] == cell.documents
-                        and row["selectivity"] == cell.selectivity
-                        and row["concurrency"] == cell.concurrency
-                        and row["cache_state"] == cell.cache_state
+                        if _same_point(row, model_name, cell)
                     ]
                     p95_by_key[cell.key()] = float(sum(p95s) / len(p95s)) if p95s else 0.0
                     completed[cell.key()] = cell
@@ -215,6 +249,7 @@ class ExperimentRunner:
                 self.resolved.slo.latency.p95_ms,
                 uncertainty=self.resolved.execution.boundary_uncertainty,
                 green_fraction=self.resolved.slo.green_fraction,
+                axis=axis,
             )
             pending = [c for c in pending if c.key() not in completed]
         if dataset.mode == "external" and dataset.generator and dataset.generator.drop_after_run:
@@ -254,6 +289,7 @@ class ExperimentRunner:
                 concurrency=cell.concurrency,
                 cache_state=cell.cache_state,
                 extras=dict(cell.extras),
+                bindings=dict(cell.bindings),
             )
             collapsed.setdefault(replaced.key(), replaced)
         return list(collapsed.values())
@@ -304,6 +340,7 @@ class ExperimentRunner:
                     concurrency=cell.concurrency,
                     cache_state=cell.cache_state,
                     extras=extras,
+                    bindings=dict(cell.bindings),
                 )
             )
         return cells
@@ -451,15 +488,36 @@ class ExperimentRunner:
         query = self.resolved.queries.get(model_name, self.resolved.query)
         parameters = self.resolved.parameters_by_model.get(model_name, self.resolved.parameters)
         logical = query.collection or self._logical_collection(model_name)
-        database = self._database_for_cell(session, model_name, cell)
-        collection = database[physical[logical]]
+        logical_db = self._database_for_cell(session, model_name, cell)
+        variables = self._variables_for_cell(cell, logical_db.name)
+        plan_raw = self.resolved.plans.get(model_name)
+        rendered = render_plan(plan_raw, variables) if plan_raw else None
+        parallel = parallel_width(rendered)
+        pool_cfg = self.resolved.workload.connection_pool
+        pool_size = (
+            pool_cfg.max_size
+            if pool_cfg.mode == "fixed"
+            else required_pool_size(cell.concurrency, parallel, pool_cfg.headroom)
+        )
+        monitor = None
+        if self._clients is not None:
+            client, monitor = self._clients.client(pool_size)
+            database = client[logical_db.name]
+        else:
+            database = logical_db
+        if rendered is not None:
+            collection = database[rendered.steps[0].collection]
+        else:
+            collection = database[physical[logical]]
         param_gen = QueryParameterGenerator(
             parameters, rng=np.random.default_rng(self.resolved.dataset.seed + repetition)
         )
+        self._seed_parameters(param_gen, parameters, logical_db.name, cell)
         for spec in parameters.values():
-            if spec.field:
+            field_name = spec.field
+            if field_name and not param_gen.cached_values.get(field_name):
                 try:
-                    param_gen.preload(collection, spec.field)
+                    param_gen.preload(collection, field_name)
                 except Exception:  # noqa: BLE001
                     continue
         workload = self.resolved.workload.model_copy(
@@ -470,17 +528,43 @@ class ExperimentRunner:
             }
         )
         executor = WorkloadExecutor(
-            collection, query, workload, param_gen, selectivity=cell.selectivity
+            collection,
+            query,
+            workload,
+            param_gen,
+            selectivity=cell.selectivity,
+            plan=rendered,
+            database=database if rendered is not None else None,
         )
         cache_state = normalize_cache_state(cell.cache_state)
         if cache_state == HOT:
             executor.warmup(cell.concurrency)
+        if monitor is not None:
+            monitor.begin_measurement()
+        wall_started = time.perf_counter()
+        cpu_started = time.process_time()
         metrics: WorkloadMetrics = executor.run(concurrency=cell.concurrency, include_warmup=False)
+        wall = max(time.perf_counter() - wall_started, 1e-9)
+        client_cpu_pct = 100.0 * (time.process_time() - cpu_started) / wall
+        pool_stats = monitor.snapshot() if monitor is not None else {
+            "peak_in_use": 0,
+            "connections_created": 0,
+            "wait_p50_ms": 0.0,
+            "wait_p95_ms": 0.0,
+            "wait_max_ms": 0.0,
+            "checkouts": 0,
+        }
+        sampled = _sample_summary(executor.sample_counts)
         explain_samples = []
         for _ in range(workload.explain_samples):
-            explain_samples.append(
-                explain_query(collection, query, param_gen.next(cell.selectivity))
-            )
+            params = param_gen.next(cell.selectivity)
+            if rendered is not None:
+                for step in rendered.steps:
+                    explain_samples.append(
+                        explain_query(database[step.collection], step_query(step), params)
+                    )
+            else:
+                explain_samples.append(explain_query(collection, query, params))
         explain_summary = summarize_explains(explain_samples)
         resources = capture_resources(database)
         dataset = self.resolved.datasets.get(model_name, self.resolved.dataset)
@@ -489,19 +573,49 @@ class ExperimentRunner:
         if primary_spec and primary_spec.document_size:
             document_size = primary_spec.document_size.target_bytes
         document_size = int(cell.extras.get("document_size") or document_size or 0)
+        executed_rows = (
+            int(round(metrics.returned_total / metrics.successes)) if metrics.successes else 0
+        )
+        collections = (
+            [step.collection for step in rendered.steps]
+            if rendered is not None
+            else [collection.name]
+        )
+        cell_values = cell.variables()
+        record = cell_settings(
+            model=model_name,
+            cell_values=cell_values,
+            bindings=cell.bindings,
+            database=database.name,
+            collections=collections,
+            rendered=rendered.as_dict() if rendered is not None else None,
+            concurrency=cell.concurrency,
+            parallel_steps=parallel,
+            headroom=pool_cfg.headroom,
+            pool_mode=pool_cfg.mode,
+            fixed_pool_size=pool_cfg.max_size,
+            pool_stats=pool_stats,
+            warmup=cache_state == HOT,
+            sampled_parameters=sampled,
+            client_cpu_pct=client_cpu_pct,
+            rtt_ms=self._rtt_ms,
+        )
+        record["repetition"] = repetition
+        self._cell_logs.append(record)
         observation = {
             "experiment_id": self.resolved.experiment.id,
             "run_id": None,
             "environment_id": database.name,
             "scale_database": database.name if dataset.has_scale_map else None,
             "model_id": model_name,
+            "plan": model_name if plan_raw else None,
             "query_shape_id": shape_id(query),
             "dataset_size": cell.documents,
             "selectivity": cell.selectivity,
             "concurrency": cell.concurrency,
             "cache_state": cache_state,
             "document_size_bytes": document_size,
-            "result_count": explain_summary.get("n_returned") or query.limit or 0,
+            "result_count": executed_rows,
             "repetition": repetition,
             **metrics.as_dict(),
             "n_returned": explain_summary.get("n_returned"),
@@ -509,14 +623,119 @@ class ExperimentRunner:
             "docs_examined": explain_summary.get("docs_examined"),
             "keys_examined_per_returned": explain_summary.get("keys_examined_per_returned"),
             "docs_examined_per_returned": explain_summary.get("docs_examined_per_returned"),
+            "explain_branches": explain_summary.get("branches"),
+            "explain_sort": explain_summary.get("sort"),
             "resource_metrics": resources,
+            "pool_max_size": record["pool"]["max_size"],
+            "pool_peak_in_use": pool_stats.get("peak_in_use"),
+            "pool_wait_p95_ms": pool_stats.get("wait_p95_ms"),
+            "pool_connections_created": pool_stats.get("connections_created"),
+            "parallel_steps": parallel,
+            "client_cpu_pct": round(client_cpu_pct, 2),
+            "rtt_ms": self._rtt_ms,
+            "warmup": cache_state == HOT,
         }
-        if cell.extras.get("measured_documents") is not None:
-            observation["measured_documents"] = cell.extras["measured_documents"]
+        for key, value in cell.extras.items():
+            observation.setdefault(key, value)
         explain_record = {
             "model_id": model_name,
             "cell": cell.as_dict(),
             "repetition": repetition,
+            "rendered": rendered.as_dict() if rendered is not None else None,
             **explain_summary,
         }
         return observation, explain_record
+
+    def _ensure_recipe(
+        self,
+        session: MongoSession,
+        manifest: CreationManifest,
+        cells: list[ExperimentCell],
+    ) -> None:
+        if self._recipe_state is not None or self.dry_run:
+            return
+        dataset = self.resolved.dataset
+        if dataset.recipe is None:
+            return
+        recipe = dataset.recipe
+        scales = {int(size): name for size, name in dataset.scales.items()}
+        wanted_docs = {cell.documents for cell in cells}
+        if wanted_docs:
+            scales = {size: name for size, name in scales.items() if size in wanted_docs}
+        wanted_matches = sorted(
+            {
+                int(cell.extras["matches_per_key"])
+                for cell in cells
+                if "matches_per_key" in cell.extras
+            }
+        )
+        if wanted_matches:
+            recipe = recipe.model_copy(update={"matches_per_key": wanted_matches})
+        console.print("[cyan]materializing data recipe[/cyan]")
+        self._recipe_state = materialize_recipe(
+            session.client,
+            recipe,
+            scales,
+            safety=self.resolved.environment.safety,
+            manifest=manifest,
+            batch_size=self.resolved.execution.insert_batch_size,
+            override_storage=self.override_storage,
+        )
+        console.print(
+            f"recipe {self._recipe_state.fingerprint}: "
+            f"created {len(self._recipe_state.created)}, reused {len(self._recipe_state.reused)}"
+        )
+
+    def _variables_for_cell(self, cell: ExperimentCell, database_name: str) -> dict[str, Any]:
+        variables = cell.variables()
+        recipe = self.resolved.dataset.recipe
+        if recipe is None or self._recipe_state is None:
+            variables.setdefault("collections", [])
+            return variables
+        matches = cell.extras.get("matches_per_key", recipe.matches_per_key[0])
+        names = self._recipe_state.collections.get((database_name, int(matches)), [])
+        if cell.extras.get("union_count") and int(cell.extras["union_count"]) > len(names):
+            raise ExecutionError(
+                f"union_count {cell.extras['union_count']} exceeds recipe copies ({len(names)})"
+            )
+        variables["collections"] = names
+        variables["lead"] = names[0] if names else None
+        variables["matches_per_key"] = int(matches)
+        return variables
+
+    def _seed_parameters(self, param_gen: QueryParameterGenerator, parameters: dict, database_name: str, cell: ExperimentCell) -> None:
+        if self._recipe_state is None or self.resolved.dataset.recipe is None:
+            return
+        matches = cell.extras.get("matches_per_key", self.resolved.dataset.recipe.matches_per_key[0])
+        keys = self._recipe_state.keys.get((database_name, int(matches))) or []
+        if not keys:
+            return
+        for name, spec in parameters.items():
+            param_gen.cached_values[spec.field or name] = list(keys)
+            param_gen.cached_values[name] = list(keys)
+
+
+def _same_point(row: dict[str, Any], model_name: str, cell: ExperimentCell) -> bool:
+    if row.get("model_id") != model_name:
+        return False
+    if row.get("dataset_size") != cell.documents:
+        return False
+    if row.get("selectivity") != cell.selectivity:
+        return False
+    if row.get("concurrency") != cell.concurrency:
+        return False
+    if row.get("cache_state") != cell.cache_state:
+        return False
+    return all(row.get(key) == value for key, value in cell.extras.items())
+
+
+def _sample_summary(counts: dict[str, dict[str, int]]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for name, values in counts.items():
+        ordered = sorted(values.items(), key=lambda item: (-item[1], item[0]))
+        summary[name] = {
+            "distinct": len(values),
+            "samples": int(sum(values.values())),
+            "top": [{"value": key, "count": count} for key, count in ordered[:8]],
+        }
+    return summary

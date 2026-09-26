@@ -150,6 +150,44 @@ class ExternalGeneratorConfig(FrozenModel):
     drop_after_run: bool = False
 
 
+class EmbedSpec(FrozenModel):
+    """Subdocument copied onto every cloned entity document."""
+
+    source: str = Field(alias="from")
+    as_field: str = Field(default="loan_instance", alias="as")
+    fields: list[str] = Field(default_factory=lambda: ["_id", "loan_ruid"])
+
+
+class CloneEmbedRecipe(FrozenModel):
+    """Clone a source collection N times and embed an indexed object on each copy.
+
+    Names must stay under the managed `perfenv_` prefix. `{i}` is the 1-based copy
+    index and `{matches_per_key}` is the matches-per-key variant, so different
+    match counts do not share a collection.
+    """
+
+    kind: Literal["clone_embed"] = "clone_embed"
+    source_collection: str
+    embed: EmbedSpec
+    copies: int = 8
+    name_template: str = "perfenv_union_k{matches_per_key}_entity_{i:02d}"
+    matches_per_key: list[int] = Field(default_factory=lambda: [1])
+    indexes: list[IndexSpec] = Field(default_factory=list)
+    seed: int = 42
+    copy_fields: list[str] = Field(default_factory=lambda: ["created_at"])
+    document_bytes_estimate: int = 4096
+
+    @model_validator(mode="after")
+    def _recipe_constraints(self) -> "CloneEmbedRecipe":
+        if self.copies < 1:
+            raise ValueError("recipe.copies must be at least 1")
+        if not self.matches_per_key or any(int(k) < 1 for k in self.matches_per_key):
+            raise ValueError("recipe.matches_per_key values must be >= 1")
+        if "perfenv" not in self.name_template:
+            raise ValueError("recipe.name_template must keep the perfenv_ managed prefix")
+        return self
+
+
 class DatasetConfig(FrozenModel):
     mode: Literal["synthetic", "existing", "external"] = "synthetic"
     seed: int = 42
@@ -162,6 +200,8 @@ class DatasetConfig(FrozenModel):
     # External mode: one collection per scale, materialized by `generator`.
     collection_template: str = "{collection}_{documents}"
     generator: ExternalGeneratorConfig | None = None
+    # Existing mode: build managed collections (for example N union branches) before measuring.
+    recipe: CloneEmbedRecipe | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -259,7 +299,11 @@ class ParameterSpec(FrozenModel):
 
 
 class ConnectionPoolConfig(FrozenModel):
+    # `fixed` uses max_size for every test case.
+    # `derived` sizes the pool per test case: concurrency × parallel steps + headroom.
+    mode: Literal["fixed", "derived"] = "derived"
     max_size: int = 100
+    headroom: int = 4
 
 
 class WorkloadConfig(FrozenModel):
@@ -274,8 +318,31 @@ class WorkloadConfig(FrozenModel):
     connection_pool: ConnectionPoolConfig = Field(default_factory=ConnectionPoolConfig)
 
 
+BindKind = Literal["param", "shape", "target", "load", "data", "plan", "label"]
+
+#: Where each built-in sweep setting is applied when the spec does not say.
+DEFAULT_BINDS: dict[str, BindKind] = {
+    "documents": "target",
+    "selectivity": "param",
+    "concurrency": "load",
+    "cache_state": "load",
+    "document_size": "data",
+    "result_cardinality": "label",
+    "array_cardinality": "data",
+    "range_width": "shape",
+    "field_cardinality": "data",
+    "value_skew": "data",
+    "payload_size": "data",
+    "sort_size": "shape",
+    "lookup_fan_out": "shape",
+    "number_of_shards": "label",
+}
+
+
 class DimensionSpec(FrozenModel):
     values: list[Any]
+    # None means "use DEFAULT_BINDS, or shape for a custom setting".
+    bind: BindKind | None = None
 
 
 class ExperimentDimensions(FrozenModel):
@@ -293,14 +360,28 @@ class ExperimentDimensions(FrozenModel):
     sort_size: DimensionSpec | None = None
     lookup_fan_out: DimensionSpec | None = None
     number_of_shards: DimensionSpec | None = None
+    # Named settings that are not one of the built-in axes (union_count, matches_per_key, ...).
+    extra_axes: dict[str, DimensionSpec] = Field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, list[Any]]:
-        out: dict[str, list[Any]] = {}
+    def iter_specs(self) -> dict[str, DimensionSpec]:
+        out: dict[str, DimensionSpec] = {}
         for name in type(self).model_fields:
+            if name == "extra_axes":
+                continue
             spec = getattr(self, name)
             if spec is not None:
-                out[name] = list(spec.values)
+                out[name] = spec
+        out.update(self.extra_axes)
         return out
+
+    def as_dict(self) -> dict[str, list[Any]]:
+        return {name: list(spec.values) for name, spec in self.iter_specs().items()}
+
+    def bindings(self) -> dict[str, str]:
+        return {
+            name: (spec.bind or DEFAULT_BINDS.get(name, "shape"))
+            for name, spec in self.iter_specs().items()
+        }
 
 
 class LatencySLO(FrozenModel):
@@ -316,6 +397,14 @@ class SLOConfig(FrozenModel):
     latency: LatencySLO
     error_rate: ErrorRateSLO = Field(default_factory=ErrorRateSLO)
     green_fraction: float = 0.70
+
+
+class ThresholdGoal(FrozenModel):
+    """Largest tested value of `axis` whose p95 still meets the SLO, per group."""
+
+    axis: str
+    where: str = "p95 > slo"
+    for_each: list[str] = Field(default_factory=list)
 
 
 class ExecutionSettings(FrozenModel):
@@ -350,6 +439,7 @@ class ExperimentConfig(FrozenModel):
     collection: str | None = None
     # Scales to project (extrapolate) curves for without measuring them.
     project_documents: list[int] = Field(default_factory=list)
+    goal: ThresholdGoal | None = None
 
     @property
     def targets_existing(self) -> bool:

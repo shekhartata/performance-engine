@@ -15,6 +15,7 @@ from perf_envelope.diagnostics.heuristics import collect_diagnostics
 from perf_envelope.frontier.change_point import detect_change_points
 from perf_envelope.frontier.envelope import build_envelope
 from perf_envelope.frontier.slo_boundary import detect_slo_boundary
+from perf_envelope.frontier.threshold import find_thresholds
 from perf_envelope.storage.runs import ExperimentRepository
 
 
@@ -23,11 +24,14 @@ def analyze_frame(
     slo_p95: float,
     green_fraction: float = 0.7,
     project_documents: list[int] | None = None,
+    sweep_axes: list[str] | None = None,
+    goal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if frame.empty:
         raise ValueError("No observations to analyze")
-    baseline = fit_baseline(frame)
-    boosted = fit_xgboost(frame)
+    extras = [axis for axis in (sweep_axes or []) if axis in frame.columns]
+    baseline = fit_baseline(frame, extras=extras)
+    boosted = fit_xgboost(frame, extras=extras)
     predictor = boosted if boosted is not None else baseline
     predicted = predictor.predict_p95(frame)
     actual = frame["p95_ms"].to_numpy(dtype=float)
@@ -57,6 +61,7 @@ def analyze_frame(
         "row_count": int(len(frame)),
         "used_xgboost": boosted is not None and getattr(boosted, "backend", "") == "xgboost",
         "boosting_backend": getattr(boosted, "backend", None),
+        "thresholds": _thresholds(annotated, slo_p95, green_fraction, goal),
         "predictions": annotated[
             [
                 col
@@ -75,6 +80,21 @@ def analyze_frame(
     }
 
 
+def _thresholds(
+    frame: pd.DataFrame,
+    slo_p95: float,
+    green_fraction: float,
+    goal: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not goal:
+        return []
+    axis = str(goal.get("axis") or "")
+    if not axis:
+        return []
+    for_each = list(goal.get("for_each") or [])
+    return find_thresholds(frame, axis, slo_p95, for_each, green_fraction)
+
+
 def analyze_run(
     run_dir,
     slo_p95: float,
@@ -89,8 +109,17 @@ def analyze_run(
     except Exception:  # noqa: BLE001
         experiment = {}
     project_documents = list(experiment.get("project_documents") or []) if isinstance(experiment, dict) else []
+    dimensions = experiment.get("dimensions") if isinstance(experiment, dict) else {}
+    extra_axes = (dimensions or {}).get("extra_axes") or {}
+    sweep_axes = list(extra_axes.keys()) if isinstance(extra_axes, dict) else []
+    goal = experiment.get("goal") if isinstance(experiment, dict) else None
     analysis = analyze_frame(
-        frame, slo_p95, green_fraction, project_documents=project_documents
+        frame,
+        slo_p95,
+        green_fraction,
+        project_documents=project_documents,
+        sweep_axes=sweep_axes,
+        goal=goal if isinstance(goal, dict) else None,
     )
     repo.write_json(run_dir, "analysis.json", analysis)
     return analysis

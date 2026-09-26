@@ -46,6 +46,7 @@ def build_report(
     environment: dict[str, Any] | None = None,
     query: dict[str, Any] | None = None,
     experiment: dict[str, Any] | None = None,
+    run_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     slo = slo or {}
     slo_p95 = (slo.get("latency") or {}).get("p95_ms") or 100
@@ -60,8 +61,51 @@ def build_report(
         ),
         "curves_by_scale": plot_p95_curves_by_scale(frame, plots_dir / "curves_by_scale.png"),
     }
+    if "union_count" in frame.columns:
+        plots["p95_vs_union_count"] = plot_p95_vs(
+            frame, "union_count", plots_dir / "p95_vs_union_count.png"
+        )
+        plots["union_by_scale"] = plot_p95_curves_by_scale(
+            frame, plots_dir / "union_by_scale.png", x="union_count"
+        )
     first_model = next(iter((analysis.get("per_model") or {}).values()), {})
     plots["envelope"] = plot_envelope(first_model.get("envelope") or [], plots_dir / "envelope.png")
+    settings = run_settings or {}
+    limitations = [
+        "Results apply only to the tested Atlas cluster, data model, query shape and workload.",
+        "Cache residency is estimated (estimated_hot / estimated_cold), not guaranteed.",
+        "The engine does not recommend indexes or rewrite queries.",
+    ]
+    if settings:
+        limitations.append(
+            "Connection pool size is listed per test case under Run settings. "
+            "Derived pools use concurrency × parallel steps + headroom."
+        )
+    if any(int(cell.get("parallel_steps") or 1) > 1 for cell in settings.get("cells") or []):
+        limitations.append(
+            "Application fan-out timings include this machine's round-trip time to Atlas. "
+            "A client in the same region would pay less network time per branch."
+        )
+    measured_columns = [
+        "model_id",
+        "plan",
+        "dataset_size",
+        "selectivity",
+        "concurrency",
+        "cache_state",
+        "union_count",
+        "matches_per_key",
+        "p50_ms",
+        "p95_ms",
+        "p99_ms",
+        "qps",
+        "error_rate",
+        "result_count",
+        "pool_max_size",
+        "pool_wait_p95_ms",
+        "parallel_steps",
+        "client_cpu_pct",
+    ]
     return {
         "executive_summary": {
             "run_id": run_dir.name,
@@ -80,22 +124,7 @@ def build_report(
         "experiment_dimensions": experiment.get("dimensions") if experiment else {},
         "slo": slo,
         "measured_performance": frame[
-            [
-                col
-                for col in [
-                    "model_id",
-                    "dataset_size",
-                    "selectivity",
-                    "concurrency",
-                    "cache_state",
-                    "p50_ms",
-                    "p95_ms",
-                    "p99_ms",
-                    "qps",
-                    "error_rate",
-                ]
-                if col in frame.columns
-            ]
+            [col for col in measured_columns if col in frame.columns]
         ].to_dict(orient="records"),
         "performance_surface": analysis.get("predictions"),
         "observed_boundary": {
@@ -110,11 +139,10 @@ def build_report(
         "diagnostics": analysis.get("diagnostics"),
         "confidence": confidence_label(analysis),
         "model_comparison": comparison,
-        "limitations": [
-            "Results apply only to the tested Atlas cluster, data model, query shape and workload.",
-            "Cache residency is estimated (estimated_hot / estimated_cold), not guaranteed.",
-            "The engine does not recommend indexes or rewrite queries.",
-        ],
+        "run_settings": settings,
+        "pool_lines": _pool_lines(settings),
+        "thresholds": analysis.get("thresholds") or [],
+        "limitations": limitations,
         "raw_results_path": str(run_dir / "observations.parquet"),
         "plots": plots,
         "scale_curves": analysis.get("per_scale") or [],
@@ -164,14 +192,36 @@ def generate_reports(run_dir: Path, repo: ExperimentRepository | None = None) ->
     slo_file = run_dir / "configuration" / "slo.json"
     if slo_file.exists():
         slo = json.loads(slo_file.read_text())
+    run_settings = _optional_json(run_dir / "configuration" / "run_settings.json")
     report = build_report(
-        run_dir, frame, analysis, slo=slo, environment=environment, query=query, experiment=experiment
+        run_dir,
+        frame,
+        analysis,
+        slo=slo,
+        environment=environment,
+        query=query,
+        experiment=experiment,
+        run_settings=run_settings or None,
     )
     return {
         "json": write_json_report(run_dir, report),
         "markdown": write_markdown_report(run_dir, report),
         "html": write_html_report(run_dir, report),
     }
+
+
+def _pool_lines(settings: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for cell in settings.get("cells") or []:
+        pool = cell.get("pool") or {}
+        wait = pool.get("wait_p95_ms")
+        wait_text = f"{float(wait):.3f}" if isinstance(wait, (int, float)) else "n/a"
+        lines.append(
+            f"{cell.get('model')} repetition {cell.get('repetition', 0)}: "
+            f"Connection pool: {pool.get('formula')}, "
+            f"peak in use {pool.get('peak_in_use')}, pool wait p95 {wait_text} ms."
+        )
+    return lines
 
 
 def _optional_json(path: Path) -> dict[str, Any]:

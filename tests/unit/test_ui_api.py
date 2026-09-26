@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from perf_envelope.api.app import app
-from perf_envelope.api.spec_builder import AdvancedOptions, build_spec, with_second_model
+from perf_envelope.api.spec_builder import AdvancedOptions, build_spec, load_pasted_spec, with_second_model
 from perf_envelope.api.state import reset
 from perf_envelope.config.spec import compile_spec_data
 from perf_envelope.environment.mongodb import redact_uri
@@ -119,3 +120,47 @@ def test_build_spec_synthetic_sweeps_selectivity_and_document_size():
     assert resolved.parameters["group_id"].strategy == "selectivity_targeted"
     assert resolved.parameters["start_date"].type == "datetime_range"
     assert resolved.query.limit == 50
+
+
+def test_pasted_spec_uses_session_uri_and_compiles_union():
+    example = Path(__file__).resolve().parents[2] / "examples" / "union_fanout.yaml"
+    text = example.read_text(encoding="utf-8").replace(
+        "target:\n",
+        "target:\n  uri: mongodb://user:super-secret@evil.example/admin\n",
+        1,
+    )
+    session_uri = "mongodb://session-user:session-pass@localhost:27017"
+    spec = load_pasted_spec(text, session_uri)
+    resolved = compile_spec_data(spec, source=Path("ui-spec.yaml"))
+    assert resolved.environment.connection.uri == session_uri
+    assert resolved.environment.connection.database == "mi_transformation"
+    assert resolved.query.collection == "quotes"
+    assert set(resolved.plans) == {"server_union", "app_fanout"}
+    blob = json.dumps(resolved.extra)
+    assert "super-secret" not in blob
+    assert resolved.slo.latency.p95_ms == 100
+
+
+def test_pasted_spec_rejects_invalid_yaml(monkeypatch):
+    reset()
+    monkeypatch.setattr("perf_envelope.api.app.open_client", _open)
+    client = TestClient(app)
+    connected = client.post("/api/session", json={"uri": "mongodb://user:super-secret@localhost:27017"})
+    assert connected.status_code == 200
+    invalid = client.post(
+        "/api/runs",
+        json={"ack_non_production": True, "spec_yaml": "sweep: [\n  -"},
+    )
+    assert invalid.status_code == 400
+    assert "YAML" in invalid.json()["detail"]
+    assert "super-secret" not in invalid.text
+    missing = client.post(
+        "/api/runs",
+        json={"ack_non_production": True, "spec_yaml": "target: []\n"},
+    )
+    assert missing.status_code == 400
+    assert "target" in missing.json()["detail"]
+    example = client.get("/api/spec-example")
+    assert example.status_code == 200
+    assert "union_count" in example.json()["yaml"]
+    assert "mongodb" not in example.json()["yaml"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from perf_envelope.experiment.matrix import ExperimentCell
 
@@ -22,21 +23,23 @@ def propose_refinement(
     *,
     uncertainty: float = 0.15,
     green_fraction: float = 0.7,
+    axis: str = "documents",
 ) -> list[ExperimentCell]:
-    """Propose new document-size midpoints between adjacent classifications."""
+    """Propose midpoints along `axis` between adjacent classifications."""
     grouped: dict[tuple, list[ExperimentCell]] = {}
     for cell in cells:
-        slice_key = (cell.selectivity, cell.concurrency, cell.cache_state, tuple(sorted(cell.extras.items())))
-        grouped.setdefault(slice_key, []).append(cell)
+        grouped.setdefault(_slice_key(cell, axis), []).append(cell)
 
     proposed: list[ExperimentCell] = []
     seen = {cell.key() for cell in cells}
     for group in grouped.values():
-        ordered = sorted(group, key=lambda c: c.documents)
+        ordered = sorted(group, key=lambda cell: _axis_value(cell, axis))
         for left, right in zip(ordered, ordered[1:]):
-            if right.documents <= 0 or left.documents <= 0:
+            left_value = _axis_value(left, axis)
+            right_value = _axis_value(right, axis)
+            if right_value <= 0 or left_value < 0 or right_value <= left_value:
                 continue
-            gap = (right.documents - left.documents) / right.documents
+            gap = (right_value - left_value) / right_value
             if gap <= uncertainty:
                 continue
             left_p95 = p95_by_key.get(left.key())
@@ -49,17 +52,63 @@ def propose_refinement(
                 continue
             if left_cls == right_cls == "RED":
                 continue
-            midpoint = int(round((left.documents + right.documents) / 2))
-            if midpoint in {left.documents, right.documents}:
+            midpoint = (left_value + right_value) / 2
+            if isinstance(left_value, int) and isinstance(right_value, int):
+                midpoint = int(round(midpoint))
+            if midpoint in {left_value, right_value}:
                 continue
-            new_cell = ExperimentCell(
-                documents=midpoint,
-                selectivity=left.selectivity,
-                concurrency=left.concurrency,
-                cache_state=left.cache_state,
-                extras=dict(left.extras),
-            )
+            new_cell = _with_axis(left, axis, midpoint)
             if new_cell.key() not in seen:
                 seen.add(new_cell.key())
                 proposed.append(new_cell)
     return proposed
+
+
+def _slice_key(cell: ExperimentCell, axis: str) -> tuple:
+    extras = tuple(sorted((key, str(value)) for key, value in cell.extras.items() if key != axis))
+    parts: list[Any] = []
+    if axis != "documents":
+        parts.append(cell.documents)
+    if axis != "selectivity":
+        parts.append(cell.selectivity)
+    if axis != "concurrency":
+        parts.append(cell.concurrency)
+    if axis != "cache_state":
+        parts.append(cell.cache_state)
+    parts.append(extras)
+    return tuple(parts)
+
+
+def _axis_value(cell: ExperimentCell, axis: str) -> float:
+    if axis == "documents":
+        return float(cell.documents)
+    if axis == "selectivity":
+        return float(cell.selectivity)
+    if axis == "concurrency":
+        return float(cell.concurrency)
+    value = cell.extras.get(axis, 0)
+    return float(value)
+
+
+def _with_axis(cell: ExperimentCell, axis: str, value: float) -> ExperimentCell:
+    documents = cell.documents
+    selectivity = cell.selectivity
+    concurrency = cell.concurrency
+    extras = dict(cell.extras)
+    if axis == "documents":
+        documents = int(round(value))
+    elif axis == "selectivity":
+        selectivity = float(value)
+    elif axis == "concurrency":
+        concurrency = int(round(value))
+    else:
+        current = cell.extras.get(axis)
+        extras[axis] = int(round(value)) if isinstance(current, int) else float(value)
+    return ExperimentCell(
+        documents=documents,
+        selectivity=selectivity,
+        concurrency=concurrency,
+        cache_state=cell.cache_state,
+        extras=extras,
+        bindings=dict(cell.bindings),
+    )

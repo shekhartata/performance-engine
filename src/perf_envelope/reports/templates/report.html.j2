@@ -26,6 +26,58 @@
     <li>MAPE: {{ report.executive_summary.validation.mape if report.executive_summary.validation else 'n/a' }}</li>
   </ul>
 
+  <h2>Run settings</h2>
+  <p>Values the engine set for this run. Source is user, default, or derived.</p>
+  <table>
+    <tr><th>Setting</th><th>Value</th><th>Source</th><th>Formula</th></tr>
+    {% for row in report.run_settings.run or [] %}
+    <tr>
+      <td>{{ row.setting }}</td>
+      <td><code>{{ row.value | tojson }}</code></td>
+      <td>{{ row.source }}</td>
+      <td>{{ row.formula or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h3>Connection pool</h3>
+  <ul>
+    {% for line in report.pool_lines or [] %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+
+  {% if report.run_settings.cells %}
+  <h3>Per test case</h3>
+  <table>
+    <tr>
+      <th>Model</th><th>Rep</th><th>Database</th><th>Pool</th>
+      <th>Peak in use</th><th>Pool wait p95 ms</th><th>Parallel steps</th>
+      <th>Warmup</th><th>Client CPU %</th>
+    </tr>
+    {% for cell in report.run_settings.cells %}
+    <tr>
+      <td>{{ cell.model }}</td>
+      <td>{{ cell.repetition }}</td>
+      <td>{{ cell.database }}</td>
+      <td>{{ cell.pool.formula }}</td>
+      <td>{{ cell.pool.peak_in_use }}</td>
+      <td>{{ cell.pool.wait_p95_ms }}</td>
+      <td>{{ cell.parallel_steps }}</td>
+      <td>{{ cell.warmup }}</td>
+      <td>{{ cell.client_cpu_pct }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <p>Rendered pipelines and sampled parameter values are in <code>configuration/run_settings.json</code>.</p>
+
+  <h2>Query</h2>
+  <pre>{{ report.access_pattern | tojson(indent=2) }}</pre>
+
+  <h2>Thresholds</h2>
+  <pre>{{ report.thresholds | tojson(indent=2) }}</pre>
+
   <h2>Performance Surface</h2>
   <div class="grid">
     {% for key, b64 in report.plots.items() %}

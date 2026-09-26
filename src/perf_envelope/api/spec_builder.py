@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from perf_envelope.config.loader import ResolvedExperiment
 from perf_envelope.exceptions import ConfigError
 from perf_envelope.query.parser import query_from_mongo_json
+from perf_envelope.workload.union_plans import app_fanout_plan, server_union_plan
 
 
 class AdvancedOptions(BaseModel):
@@ -36,6 +37,12 @@ class AdvancedOptions(BaseModel):
     synthetic_fields: dict[str, Any] | None = None
     second_query: Any | None = None
     second_model: str = "alt"
+    # Union fan-out. "off" keeps the pasted query. Otherwise the engine runs the
+    # built-in server `$unionWith` plan, the application fan-out plan, or both.
+    union_count: list[int] | str | None = None
+    union_plan: Literal["off", "server", "app", "both"] = "off"
+    matches_per_key: list[int] | str | None = None
+    union_recipe: bool = False
 
 
 def parse_int_list(value: list[int] | str | None) -> list[int] | None:
@@ -119,11 +126,41 @@ DEFAULT_QUOTES_SCALES: dict[int, str] = {
 
 
 class RunRequest(BaseModel):
-    database: str
-    collection: str
-    query: Any
+    database: str = ""
+    collection: str = ""
+    query: Any = None
     ack_non_production: bool = False
     advanced: AdvancedOptions | None = None
+    spec_yaml: str | None = None
+    allow_external_writes: bool = False
+
+
+def load_pasted_spec(text: str, uri: str) -> dict[str, Any]:
+    """Parse a CLI-style spec pasted in the UI.
+
+    The connected session supplies ``target.uri``. A URI inside the paste is
+    dropped so the run stays on the cluster the user connected, and so a
+    pasted password is not what gets stored (the compiler redacts the session URI).
+    """
+    import yaml
+
+    stripped = (text or "").strip()
+    if not stripped:
+        raise ConfigError("Spec YAML is empty")
+    try:
+        raw = yaml.safe_load(stripped)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Spec YAML is not valid: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError("Spec YAML must be a mapping of settings")
+    target = raw.get("target")
+    if target is None:
+        target = {}
+        raw["target"] = target
+    if not isinstance(target, dict):
+        raise ConfigError("target must be a mapping")
+    target["uri"] = uri
+    return raw
 
 
 def build_spec(
@@ -218,7 +255,55 @@ def build_spec(
             "collection_template": "{collection}_{documents}",
             "generator": generator,
         }
+    _apply_union(spec, adv, collection)
     return spec
+
+
+def _apply_union(spec: dict[str, Any], adv: AdvancedOptions, collection: str) -> None:
+    if adv.union_plan == "off":
+        return
+    widths = parse_int_list(adv.union_count) or [1, 2, 4, 8]
+    matches = parse_int_list(adv.matches_per_key) or [1]
+    spec["sweep"]["union_count"] = {"values": widths, "bind": "shape"}
+    spec["sweep"]["matches_per_key"] = {"values": matches, "bind": "data"}
+    plans: dict[str, Any] = {}
+    if adv.union_plan in {"server", "both"}:
+        plans["server_union"] = server_union_plan()
+    if adv.union_plan in {"app", "both"}:
+        plans["app_fanout"] = app_fanout_plan()
+    spec["plans"] = plans
+    spec["goal"] = {
+        "find_threshold": {
+            "axis": "union_count",
+            "where": "p95 > slo",
+            "for_each": ["documents", "plan"],
+        }
+    }
+    spec["parameters"] = {
+        "loan_ruid": {
+            "type": "dataset_value",
+            "field": "loan_ruid",
+            "strategy": "random_existing",
+        }
+    }
+    if not adv.union_recipe:
+        return
+    data = spec.setdefault("data", {})
+    if not data.get("scales"):
+        raise ConfigError("The union recipe needs a scale map so each size has a database")
+    data["recipe"] = {
+        "kind": "clone_embed",
+        "source_collection": collection,
+        "embed": {
+            "from": "mi_transformation.loan_instances",
+            "as": "loan_instance",
+            "fields": ["_id", "loan_ruid", "terms_of_loan"],
+        },
+        "copies": max(widths),
+        "name_template": "perfenv_union_k{matches_per_key}_entity_{i:02d}",
+        "matches_per_key": matches,
+        "seed": adv.synthetic_seed,
+    }
 
 
 def with_second_model(

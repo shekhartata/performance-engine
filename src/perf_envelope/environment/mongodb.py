@@ -49,14 +49,19 @@ def open_client(
     uri: str,
     *,
     max_pool_size: int = 100,
+    min_pool_size: int = 0,
     server_selection_timeout_ms: int = 15_000,
+    event_listeners: list | None = None,
 ) -> MongoClient:
-    client = MongoClient(
-        uri,
-        maxPoolSize=max_pool_size,
-        serverSelectionTimeoutMS=server_selection_timeout_ms,
-        appname="perf-envelope",
-    )
+    kwargs: dict = {
+        "maxPoolSize": max_pool_size,
+        "minPoolSize": min_pool_size,
+        "serverSelectionTimeoutMS": server_selection_timeout_ms,
+        "appname": "perf-envelope",
+    }
+    if event_listeners:
+        kwargs["event_listeners"] = event_listeners
+    client = MongoClient(uri, **kwargs)
     try:
         client.admin.command("ping")
     except Exception as exc:  # noqa: BLE001

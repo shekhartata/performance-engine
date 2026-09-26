@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
 
-from perf_envelope.analysis.features import FEATURE_COLUMNS, feature_matrix
+from perf_envelope.analysis.features import feature_matrix
 
 try:
     from xgboost import XGBRegressor
@@ -25,15 +25,17 @@ class BoostedFit:
     feature_names: list[str]
     importances: dict[str, float]
     backend: str
+    extras: list[str]
 
     def predict_p95(self, frame) -> np.ndarray:
-        x, _, _ = feature_matrix(frame)
+        x, _, _ = feature_matrix(frame, self.extras)
         log_pred = self.model.predict(x)
         return np.expm1(np.clip(log_pred, 0, None))
 
 
-def fit_xgboost(frame, random_state: int = 42) -> BoostedFit | None:
-    x, y, names = feature_matrix(frame)
+def fit_xgboost(frame, random_state: int = 42, extras: list[str] | None = None) -> BoostedFit | None:
+    extra_names = list(extras or [])
+    x, y, names = feature_matrix(frame, extra_names)
     if len(y) < 4:
         return None
     if XGBRegressor is not None:
@@ -55,7 +57,7 @@ def fit_xgboost(frame, random_state: int = 42) -> BoostedFit | None:
             name: float(value) for name, value in zip(names, model.feature_importances_)
         }
         return BoostedFit(
-            model=model, feature_names=FEATURE_COLUMNS, importances=importances, backend="xgboost"
+            model=model, feature_names=names, importances=importances, backend="xgboost", extras=extra_names
         )
 
     model = GradientBoostingRegressor(
@@ -70,7 +72,8 @@ def fit_xgboost(frame, random_state: int = 42) -> BoostedFit | None:
     }
     return BoostedFit(
         model=model,
-        feature_names=FEATURE_COLUMNS,
+        feature_names=names,
         importances=importances,
         backend="sklearn_gbrt",
+        extras=extra_names,
     )

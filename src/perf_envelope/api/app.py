@@ -17,7 +17,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from perf_envelope.analysis.pipeline import analyze_run
-from perf_envelope.api.spec_builder import AdvancedOptions, RunRequest, build_spec, with_second_model
+from perf_envelope.api.spec_builder import (
+    AdvancedOptions,
+    RunRequest,
+    build_spec,
+    load_pasted_spec,
+    with_second_model,
+)
 from perf_envelope.api.state import COOKIE, LOCK, RUNS, SESSIONS, RunRecord, SessionRecord
 from perf_envelope.config.spec import compile_spec_data
 from perf_envelope.environment.mongodb import (
@@ -136,6 +142,14 @@ def read_collections(
     return {"database": database, "collections": names}
 
 
+@router.get("/spec-example")
+def spec_example() -> dict[str, str]:
+    path = Path(__file__).resolve().parents[3] / "examples" / "union_fanout.yaml"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Example spec is not available")
+    return {"name": path.name, "yaml": path.read_text(encoding="utf-8")}
+
+
 @router.post("/runs")
 def start_run(body: RunRequest, session: SessionRecord = Depends(current_session)) -> dict[str, Any]:
     if not body.ack_non_production:
@@ -143,8 +157,26 @@ def start_run(body: RunRequest, session: SessionRecord = Depends(current_session
             status_code=400,
             detail="Acknowledge that this is a non-production cluster before running.",
         )
-    if not body.database or not body.collection:
-        raise HTTPException(status_code=400, detail="Database and collection are required")
+    pasted = (body.spec_yaml or "").strip()
+    slo_p95 = (body.advanced or AdvancedOptions()).slo_p95
+    if pasted:
+        try:
+            resolved = compile_spec_data(
+                load_pasted_spec(pasted, session.uri),
+                source=Path("ui-spec.yaml"),
+            )
+        except PerfEnvelopeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        database = resolved.environment.connection.database or "spec"
+        collection = resolved.query.collection or "spec"
+        slo_p95 = resolved.slo.latency.p95_ms
+    else:
+        if not body.database or not body.collection:
+            raise HTTPException(status_code=400, detail="Database and collection are required")
+        if body.query is None:
+            raise HTTPException(status_code=400, detail="Query is required")
+        database = body.database
+        collection = body.collection
     with LOCK:
         busy = any(
             item.session_id == session.id and item.status in {"queued", "running"}
@@ -156,10 +188,11 @@ def start_run(body: RunRequest, session: SessionRecord = Depends(current_session
     record = RunRecord(
         id=run_id,
         session_id=session.id,
-        database=body.database,
-        collection=body.collection,
+        database=database,
+        collection=collection,
         status="queued",
         progress={"phase": "queued"},
+        slo_p95=slo_p95,
     )
     with LOCK:
         RUNS[run_id] = record
@@ -202,6 +235,7 @@ def serialize_run(record: RunRecord) -> dict[str, Any]:
         "error": record.error,
         "analysis": record.analysis,
         "observations": record.observations,
+        "slo_p95": record.slo_p95,
     }
 
 
@@ -247,30 +281,37 @@ def _execute_run(run_id: str, session: SessionRecord, body: RunRequest) -> None:
 
     try:
         progress({"phase": "compile"})
-        spec = build_spec(
-            uri=session.uri,
-            database=body.database,
-            collection=body.collection,
-            query=body.query,
-            advanced=advanced,
-        )
-        resolved = compile_spec_data(spec, source=Path("ui-run.yaml"))
-        resolved = with_second_model(
-            resolved, advanced.second_query, body.collection, advanced.second_model
-        )
+        pasted = (body.spec_yaml or "").strip()
+        if pasted:
+            spec = load_pasted_spec(pasted, session.uri)
+            resolved = compile_spec_data(spec, source=Path("ui-spec.yaml"))
+            allow_external_writes = body.allow_external_writes
+        else:
+            spec = build_spec(
+                uri=session.uri,
+                database=body.database,
+                collection=body.collection,
+                query=body.query,
+                advanced=advanced,
+            )
+            resolved = compile_spec_data(spec, source=Path("ui-run.yaml"))
+            resolved = with_second_model(
+                resolved, advanced.second_query, body.collection, advanced.second_model
+            )
+            allow_external_writes = advanced.allow_external_writes
         progress({"phase": "run"})
         repo = ExperimentRepository(resolved.execution.runs_dir)
         runner = ExperimentRunner(
             resolved,
             acknowledged=True,
-            allow_external_writes=advanced.allow_external_writes,
+            allow_external_writes=allow_external_writes,
             repo=repo,
             on_progress=progress,
         )
         runner.run(run_id)
         progress({"phase": "analyze"})
         run_dir = repo.resolve(run_id)
-        analyze_run(run_dir, advanced.slo_p95, 0.7, repo)
+        analyze_run(run_dir, resolved.slo.latency.p95_ms, resolved.slo.green_fraction, repo)
         try:
             generate_reports(run_dir, repo)
         except Exception as exc:  # noqa: BLE001
