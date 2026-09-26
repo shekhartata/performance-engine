@@ -24,6 +24,7 @@
   <ul>
     <li>Models: {{ report.data_model | join(', ') }}</li>
     <li>MAPE: {{ report.executive_summary.validation.mape if report.executive_summary.validation else 'n/a' }}</li>
+    <li>Prediction model: {{ report.executive_summary.prediction_model or 'n/a' }}</li>
   </ul>
 
   <h2>Run settings</h2>
@@ -76,7 +77,26 @@
   <pre>{{ report.access_pattern | tojson(indent=2) }}</pre>
 
   <h2>Thresholds</h2>
-  <pre>{{ report.thresholds | tojson(indent=2) }}</pre>
+  {% set table = report.threshold_table %}
+  {% if table and table.rows %}
+  <p>Largest {{ table.axis }} whose p95 stays within the SLO, for each combination of the other varied settings.</p>
+  <table>
+    <tr>
+      {% for name in table.group_names %}<th>{{ name }}</th>{% endfor %}
+      <th>Largest {{ table.axis }} meeting SLO</th><th>p95 there (ms)</th><th>First failing {{ table.axis }}</th>
+    </tr>
+    {% for row in table.rows %}
+    <tr>
+      {% for value in row.groups %}<td>{{ value }}</td>{% endfor %}
+      <td>{{ row.max_meeting_slo if row.max_meeting_slo is not none else 'none' }}</td>
+      <td>{{ row.p95_ms if row.p95_ms is not none else 'n/a' }}</td>
+      <td>{{ row.first_fail if row.first_fail is not none else 'none tested' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No threshold goal was set.</p>
+  {% endif %}
 
   <h2>Performance Surface</h2>
   <div class="grid">
@@ -91,15 +111,34 @@
   </div>
 
   <h2>Observed Boundary</h2>
+  {% if report.averaged_over %}
+  <p>This section and Model Comparison summarize by dataset size and average over {{ report.averaged_over | join(', ') }}. The Thresholds table gives results for each condition.</p>
+  {% endif %}
   <pre>{{ report.observed_boundary | tojson(indent=2) }}</pre>
 
-  <h2>Sensitivity</h2>
+  <h2>What drives latency</h2>
+  {% set attribution = report.attribution %}
+  {% if attribution and attribution.rows %}
+  <p>{{ attribution.explanation }}</p>
   <table>
-    <tr><th>Factor</th><th>Relative influence</th></tr>
-    {% for name, value in (report.sensitivity_analysis or {}).items() %}
-    <tr><td>{{ name }}</td><td>{{ value }}%</td></tr>
+    <tr><th>Setting</th><th>Share</th></tr>
+    {% for row in attribution.rows %}
+    <tr><td>{{ row.name }}</td><td>{{ row.share }}%</td></tr>
     {% endfor %}
   </table>
+  <p>A row like "A × B" is the extra effect of A and B together: how much the effect of one changes with the other.</p>
+  {% else %}
+  <p>{{ attribution.explanation if attribution else 'Not available.' }}</p>
+  {% endif %}
+  {% if attribution and attribution.held_fixed %}
+  <p>Held fixed (not varied, so not ranked):
+    {% for name, value in attribution.held_fixed.items() %}{{ name }} = {{ value }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+  {% endif %}
+  {% if attribution and attribution.notes %}
+  <ul>
+    {% for note in attribution.notes %}<li>{{ note }}</li>{% endfor %}
+  </ul>
+  {% endif %}
 
   <h2>Diagnostics</h2>
   <ul>
@@ -109,6 +148,7 @@
   </ul>
 
   <h2>Model Comparison</h2>
+  {% if report.averaged_over %}<p>Averaged over {{ report.averaged_over | join(', ') }}.</p>{% endif %}
   <pre>{{ report.model_comparison | tojson(indent=2) }}</pre>
 
   <h2>Scale curves</h2>

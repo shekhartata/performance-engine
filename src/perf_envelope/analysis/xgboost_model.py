@@ -11,12 +11,17 @@ from dataclasses import dataclass
 import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
 
-from perf_envelope.analysis.features import feature_matrix
+from perf_envelope.analysis.features import FeatureSpec, build_feature_spec, design, target
 
 try:
     from xgboost import XGBRegressor
 except Exception:  # noqa: BLE001 — missing OpenMP / native lib
     XGBRegressor = None  # type: ignore[misc, assignment]
+
+BACKEND_LABELS = {
+    "xgboost": "XGBoost",
+    "sklearn_gbrt": "scikit-learn gradient boosting (XGBoost could not load)",
+}
 
 
 @dataclass
@@ -25,17 +30,21 @@ class BoostedFit:
     feature_names: list[str]
     importances: dict[str, float]
     backend: str
-    extras: list[str]
+    spec: FeatureSpec
 
     def predict_p95(self, frame) -> np.ndarray:
-        x, _, _ = feature_matrix(frame, self.extras)
-        log_pred = self.model.predict(x)
+        log_pred = self.model.predict(design(frame, self.spec))
         return np.expm1(np.clip(log_pred, 0, None))
 
 
-def fit_xgboost(frame, random_state: int = 42, extras: list[str] | None = None) -> BoostedFit | None:
-    extra_names = list(extras or [])
-    x, y, names = feature_matrix(frame, extra_names)
+def fit_xgboost(
+    frame,
+    random_state: int = 42,
+    extras: list[str] | None = None,
+    spec: FeatureSpec | None = None,
+) -> BoostedFit | None:
+    spec = spec or build_feature_spec(frame, extras)
+    x, y, names = design(frame, spec), target(frame), spec.names
     if len(y) < 4:
         return None
     if XGBRegressor is not None:
@@ -57,7 +66,7 @@ def fit_xgboost(frame, random_state: int = 42, extras: list[str] | None = None) 
             name: float(value) for name, value in zip(names, model.feature_importances_)
         }
         return BoostedFit(
-            model=model, feature_names=names, importances=importances, backend="xgboost", extras=extra_names
+            model=model, feature_names=names, importances=importances, backend="xgboost", spec=spec
         )
 
     model = GradientBoostingRegressor(
@@ -75,5 +84,5 @@ def fit_xgboost(frame, random_state: int = 42, extras: list[str] | None = None) 
         feature_names=names,
         importances=importances,
         backend="sklearn_gbrt",
-        extras=extra_names,
+        spec=spec,
     )

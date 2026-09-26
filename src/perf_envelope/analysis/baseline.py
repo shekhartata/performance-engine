@@ -9,7 +9,7 @@ from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
-from perf_envelope.analysis.features import feature_matrix
+from perf_envelope.analysis.features import FeatureSpec, build_feature_spec, design, target
 
 
 @dataclass
@@ -17,17 +17,18 @@ class BaselineFit:
     pipeline: Pipeline
     feature_names: list[str]
     coefficients: dict[str, float]
-    extras: list[str]
+    spec: FeatureSpec
 
     def predict_p95(self, frame) -> np.ndarray:
-        x, _, _ = feature_matrix(frame, self.extras)
-        log_pred = self.pipeline.predict(x)
+        log_pred = self.pipeline.predict(design(frame, self.spec))
         return np.expm1(np.clip(log_pred, 0, None))
 
 
-def fit_baseline(frame, degree: int = 2, extras: list[str] | None = None) -> BaselineFit:
-    extra_names = list(extras or [])
-    x, y, names = feature_matrix(frame, extra_names)
+def fit_baseline(
+    frame, degree: int = 2, extras: list[str] | None = None, spec: FeatureSpec | None = None
+) -> BaselineFit:
+    spec = spec or build_feature_spec(frame, extras)
+    x, y, names = design(frame, spec), target(frame), spec.names
     pipeline = Pipeline(
         [
             ("scaler", StandardScaler()),
@@ -45,5 +46,5 @@ def fit_baseline(frame, degree: int = 2, extras: list[str] | None = None) -> Bas
         pipeline=pipeline,
         feature_names=list(expanded),
         coefficients=coefficients,
-        extras=extra_names,
+        spec=spec,
     )

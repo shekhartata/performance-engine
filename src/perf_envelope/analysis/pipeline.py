@@ -6,11 +6,13 @@ from typing import Any
 
 import pandas as pd
 
+from perf_envelope.analysis.attribution import attribute
 from perf_envelope.analysis.baseline import fit_baseline
+from perf_envelope.analysis.features import FeatureSpec, build_feature_spec
 from perf_envelope.analysis.projection import per_scale_curves, project_scales
-from perf_envelope.analysis.sensitivity import relative_sensitivity
+from perf_envelope.analysis.sensitivity import friendly_name
 from perf_envelope.analysis.validation import validate_predictions
-from perf_envelope.analysis.xgboost_model import fit_xgboost
+from perf_envelope.analysis.xgboost_model import BACKEND_LABELS, fit_xgboost
 from perf_envelope.diagnostics.heuristics import collect_diagnostics
 from perf_envelope.frontier.change_point import detect_change_points
 from perf_envelope.frontier.envelope import build_envelope
@@ -30,9 +32,11 @@ def analyze_frame(
     if frame.empty:
         raise ValueError("No observations to analyze")
     extras = [axis for axis in (sweep_axes or []) if axis in frame.columns]
-    baseline = fit_baseline(frame, extras=extras)
-    boosted = fit_xgboost(frame, extras=extras)
+    spec = build_feature_spec(frame, extras)
+    baseline = fit_baseline(frame, spec=spec)
+    boosted = fit_xgboost(frame, spec=spec)
     predictor = boosted if boosted is not None else baseline
+    attribution = attribute(frame, spec, predictor)
     predicted = predictor.predict_p95(frame)
     actual = frame["p95_ms"].to_numpy(dtype=float)
     validation = validate_predictions(actual, predicted)
@@ -53,7 +57,10 @@ def analyze_frame(
         "validation": validation.as_dict(),
         "baseline_coefficients": baseline.coefficients,
         "xgboost_importances": boosted.importances if boosted else {},
-        "sensitivity": relative_sensitivity(boosted),
+        "sensitivity": attribution["settings"],
+        "attribution": attribution,
+        "model_inputs": [friendly_name(name) for name in spec.factors],
+        "prediction_model": BACKEND_LABELS.get(getattr(boosted, "backend", ""), "Polynomial ridge regression"),
         "per_model": per_model,
         "per_scale": per_scale_curves(annotated, slo_p95),
         "projection": project_scales(annotated, project_documents or [], slo_p95, predictor),
@@ -61,7 +68,7 @@ def analyze_frame(
         "row_count": int(len(frame)),
         "used_xgboost": boosted is not None and getattr(boosted, "backend", "") == "xgboost",
         "boosting_backend": getattr(boosted, "backend", None),
-        "thresholds": _thresholds(annotated, slo_p95, green_fraction, goal),
+        "thresholds": _thresholds(annotated, slo_p95, green_fraction, goal, spec),
         "predictions": annotated[
             [
                 col
@@ -71,6 +78,7 @@ def analyze_frame(
                     "selectivity",
                     "concurrency",
                     "cache_state",
+                    *extras,
                     "p95_ms",
                     "predicted_p95_ms",
                 ]
@@ -85,13 +93,15 @@ def _thresholds(
     slo_p95: float,
     green_fraction: float,
     goal: dict[str, Any] | None,
+    spec: FeatureSpec,
 ) -> list[dict[str, Any]]:
     if not goal:
         return []
     axis = str(goal.get("axis") or "")
     if not axis:
         return []
-    for_each = list(goal.get("for_each") or [])
+    # Averaging across other varied settings would blend unlike conditions.
+    for_each = list(goal.get("for_each") or []) + spec.factors
     return find_thresholds(frame, axis, slo_p95, for_each, green_fraction)
 
 

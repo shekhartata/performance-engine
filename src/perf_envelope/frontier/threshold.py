@@ -8,6 +8,9 @@ import pandas as pd
 
 from perf_envelope.experiment.refinement import classify
 
+# Spec names that differ from observation column names.
+COLUMN_ALIASES = {"documents": "dataset_size", "model": "plan", "model_id": "plan"}
+
 
 def find_thresholds(
     frame: pd.DataFrame,
@@ -24,7 +27,7 @@ def find_thresholds(
         working["plan"] = working["model_id"]
     group_cols: list[str] = []
     for name in for_each or []:
-        column = "plan" if name == "plan" else name
+        column = COLUMN_ALIASES.get(name, name)
         if column in working.columns and column != axis and column not in group_cols:
             group_cols.append(column)
     if "plan" in working.columns and working["plan"].nunique() > 1 and "plan" not in group_cols and axis != "plan":

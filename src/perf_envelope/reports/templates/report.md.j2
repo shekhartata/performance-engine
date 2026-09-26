@@ -5,6 +5,7 @@
 - Confidence: **{{ report.confidence }}**
 - Models: {{ report.data_model | join(', ') }}
 - MAPE: {{ report.executive_summary.validation.mape if report.executive_summary.validation else 'n/a' }}
+- Prediction model: {{ report.executive_summary.prediction_model or 'n/a' }}
 
 ## Run settings
 
@@ -40,9 +41,18 @@ The full per-test-case record, including the rendered pipeline and sampled param
 
 ## Thresholds
 
-```json
-{{ report.thresholds | tojson }}
-```
+{% set table = report.threshold_table %}
+{% if table and table.rows %}
+Largest {{ table.axis }} whose p95 stays within the SLO, for each combination of the other varied settings.
+
+| {% for name in table.group_names %}{{ name }} | {% endfor %}Largest {{ table.axis }} meeting SLO | p95 there (ms) | First failing {{ table.axis }} |
+| {% for name in table.group_names %}--- | {% endfor %}--- | --- | --- |
+{% for row in table.rows %}
+| {% for value in row.groups %}{{ value }} | {% endfor %}{{ row.max_meeting_slo if row.max_meeting_slo is not none else 'none' }} | {{ row.p95_ms if row.p95_ms is not none else 'n/a' }} | {{ row.first_fail if row.first_fail is not none else 'none tested' }} |
+{% endfor %}
+{% else %}
+No threshold goal was set.
+{% endif %}
 
 ## Environment
 
@@ -58,6 +68,10 @@ The full per-test-case record, including the rendered pipeline and sampled param
 
 ## Observed Boundary
 
+{% if report.averaged_over %}
+This section and Model Comparison summarize by dataset size and average over {{ report.averaged_over | join(', ') }}. The Thresholds table gives results for each condition.
+{% endif %}
+
 {% for model, boundary in report.observed_boundary.items() %}
 ### {{ model }}
 
@@ -66,10 +80,29 @@ The full per-test-case record, including the rendered pipeline and sampled param
 - First fail: {{ boundary.first_fail if boundary else 'n/a' }}
 {% endfor %}
 
-## Sensitivity Analysis
+## What drives latency
 
-{% for name, value in (report.sensitivity_analysis or {}).items() %}
-- {{ name }}: {{ value }}%
+{% set attribution = report.attribution %}
+{% if attribution and attribution.rows %}
+{{ attribution.explanation }}
+
+| Setting | Share |
+| --- | --- |
+{% for row in attribution.rows %}
+| {{ row.name }} | {{ row.share }}% |
+{% endfor %}
+
+A row like "A × B" is the extra effect of A and B together: how much the effect of one changes with the other.
+{% else %}
+{{ attribution.explanation if attribution else 'Not available.' }}
+{% endif %}
+
+{% if attribution and attribution.held_fixed %}
+Held fixed (not varied, so not ranked): {% for name, value in attribution.held_fixed.items() %}{{ name }} = {{ value }}{% if not loop.last %}, {% endif %}{% endfor %}.
+{% endif %}
+
+{% for note in (attribution.notes if attribution else []) %}
+- {{ note }}
 {% endfor %}
 
 ## Diagnostics
@@ -79,6 +112,10 @@ The full per-test-case record, including the rendered pipeline and sampled param
 {% endfor %}
 
 ## Model Comparison
+
+{% if report.averaged_over %}
+Averaged over {{ report.averaged_over | join(', ') }}.
+{% endif %}
 
 ```json
 {{ report.model_comparison | tojson }}

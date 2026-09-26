@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from perf_envelope.analysis.features import feature_matrix
+from perf_envelope.analysis.pipeline import analyze_frame
 from perf_envelope.config.models import CloneEmbedRecipe, EmbedSpec, ExperimentDimensions
 from perf_envelope.config.spec import compile_spec
 from perf_envelope.dataset.recipe import choose_embeds, collection_names
@@ -153,6 +154,28 @@ def test_threshold_is_last_n_under_slo_per_plan():
     by_plan = {row["plan"]: row["max_meeting_slo"] for row in rows}
     assert by_plan["server"] == 4
     assert by_plan["app"] == 8
+    assert all(row["dataset_size"] == 100 for row in rows)
+
+
+def test_thresholds_are_per_condition_not_averaged():
+    frame = pd.DataFrame(
+        {
+            "model_id": ["app"] * 6,
+            "dataset_size": [100] * 6,
+            "concurrency": [1, 1, 1, 8, 8, 8],
+            "union_count": [1, 4, 8, 1, 4, 8],
+            "matches_per_key": [1] * 6,
+            "p95_ms": [20, 30, 40, 60, 150, 300],
+        }
+    )
+    analysis = analyze_frame(
+        frame,
+        slo_p95=100,
+        sweep_axes=["union_count", "matches_per_key"],
+        goal={"axis": "union_count", "for_each": ["documents"]},
+    )
+    by_concurrency = {row["concurrency"]: row["max_meeting_slo"] for row in analysis["thresholds"]}
+    assert by_concurrency == {1: 8, 8: 1}
 
 
 def test_refinement_bisects_union_count():

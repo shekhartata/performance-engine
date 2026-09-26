@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from perf_envelope.analysis.sensitivity import friendly_name
 from perf_envelope.comparison.comparator import compare_models
 from perf_envelope.reports.plots import (
     plot_envelope,
@@ -113,6 +114,7 @@ def build_report(
             "confidence": confidence_label(analysis),
             "validation": analysis.get("validation"),
             "sensitivity": analysis.get("sensitivity"),
+            "prediction_model": analysis.get("prediction_model"),
         },
         "environment": environment or {},
         "data_model": list(frame["model_id"].unique()) if "model_id" in frame.columns else [],
@@ -136,12 +138,15 @@ def build_report(
             for model, payload in (analysis.get("per_model") or {}).items()
         },
         "sensitivity_analysis": analysis.get("sensitivity"),
+        "attribution": _attribution_view(analysis.get("attribution") or {}),
+        "averaged_over": _averaged_over(analysis),
         "diagnostics": analysis.get("diagnostics"),
         "confidence": confidence_label(analysis),
         "model_comparison": comparison,
         "run_settings": settings,
         "pool_lines": _pool_lines(settings),
         "thresholds": analysis.get("thresholds") or [],
+        "threshold_table": _threshold_table(analysis.get("thresholds") or []),
         "limitations": limitations,
         "raw_results_path": str(run_dir / "observations.parquet"),
         "plots": plots,
@@ -163,7 +168,9 @@ def write_json_report(run_dir: Path, report: dict[str, Any]) -> Path:
 
 
 def write_markdown_report(run_dir: Path, report: dict[str, Any]) -> Path:
-    env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=False)
+    env = Environment(
+        loader=FileSystemLoader(TEMPLATE_DIR), autoescape=False, trim_blocks=True, lstrip_blocks=True
+    )
     template = env.get_template("report.md.j2")
     path = run_dir / "report.md"
     path.write_text(template.render(report=report))
@@ -222,6 +229,83 @@ def _pool_lines(settings: dict[str, Any]) -> list[str]:
             f"peak in use {pool.get('peak_in_use')}, pool wait p95 {wait_text} ms."
         )
     return lines
+
+
+ATTRIBUTION_METHODS = {
+    "variance_split": (
+        "Share of the variation in p95 (log scale) explained by each varied setting, computed "
+        "directly from the measurements. Every combination of these settings was measured, so "
+        "the split is exact and does not depend on the prediction model."
+    ),
+    "permutation": (
+        "How much the prediction model's error grows when one setting is shuffled. Used because "
+        "not every combination of settings was measured."
+    ),
+    "none": "Not enough varied settings to attribute latency.",
+}
+SHOWN_PAIR_MIN = 1.0
+
+
+def _attribution_view(attribution: dict[str, Any]) -> dict[str, Any]:
+    if not attribution:
+        return {}
+    pairs = attribution.get("pairs") or {}
+    shown = {name: value for name, value in pairs.items() if value >= SHOWN_PAIR_MIN}
+    other = round(sum(value for name, value in pairs.items() if name not in shown), 1)
+    rows = [{"name": name, "share": value, "kind": "setting"} for name, value in (attribution.get("settings") or {}).items()]
+    rows += [{"name": name, "share": value, "kind": "pair"} for name, value in shown.items()]
+    if pairs and other > 0:
+        rows.append({"name": "Other pairs", "share": other, "kind": "pair"})
+    if attribution.get("higher_order") is not None:
+        rows.append({"name": "Three or more settings together", "share": attribution["higher_order"], "kind": "rest"})
+    if attribution.get("noise") is not None:
+        rows.append({"name": "Repeat-to-repeat noise", "share": attribution["noise"], "kind": "rest"})
+    notes = []
+    for item in attribution.get("measured_outputs") or []:
+        cause = (
+            "It is fully set by the settings above, so it is not ranked separately."
+            if item.get("determined_by_settings")
+            else "It is measured, not set, so it is not ranked as a setting."
+        )
+        notes.append(
+            f"{item['name']} ranged from {item['min']:g} to {item['max']:g} "
+            f"(rank correlation with p95: {item.get('rank_correlation_with_p95')}). {cause}"
+        )
+    return {
+        "method": attribution.get("method"),
+        "explanation": ATTRIBUTION_METHODS.get(str(attribution.get("method")), ""),
+        "rows": rows,
+        "held_fixed": attribution.get("held_fixed") or {},
+        "notes": notes,
+    }
+
+
+def _averaged_over(analysis: dict[str, Any]) -> list[str]:
+    summarized_by = {friendly_name("dataset_size"), friendly_name("plan")}
+    return [name for name in analysis.get("model_inputs") or [] if name not in summarized_by]
+
+
+def _threshold_table(thresholds: list[dict[str, Any]]) -> dict[str, Any]:
+    if not thresholds:
+        return {}
+    fixed = {"axis", "max_meeting_slo", "max_meeting_p95_ms", "first_fail", "curve"}
+    groups = [key for key in thresholds[0] if key not in fixed]
+    rows = []
+    for item in thresholds:
+        p95 = item.get("max_meeting_p95_ms")
+        rows.append(
+            {
+                "groups": [item.get(key) for key in groups],
+                "max_meeting_slo": item.get("max_meeting_slo"),
+                "p95_ms": None if p95 is None else round(float(p95), 1),
+                "first_fail": item.get("first_fail"),
+            }
+        )
+    return {
+        "axis": friendly_name(str(thresholds[0].get("axis"))),
+        "group_names": [friendly_name(key) for key in groups],
+        "rows": rows,
+    }
 
 
 def _optional_json(path: Path) -> dict[str, Any]:
